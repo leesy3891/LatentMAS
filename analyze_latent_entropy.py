@@ -2,14 +2,14 @@
 analyze_latent_entropy.py
 =========================
 Measures per-step entropy & perplexity of the last-layer hidden state
-during LatentMAS latent recurrence (steps 0-80).
+during LatentMAS latent recurrence (steps 0 .. latent_steps).
 
 Place this file in the LatentMAS repo root (next to run.py) and run:
 
-  python analyze_latent_entropy.py \
+  CUDA_VISIBLE_DEVICES=3 python analyze_latent_entropy.py \
       --model_name Qwen/Qwen3-4B \
       --task aime2024 \
-      --max_steps 80 \
+      --latent_steps 80 \
       --max_samples -1 \
       --prompt sequential
 
@@ -32,16 +32,39 @@ from typing import Dict, List, Optional, Tuple
 from tqdm import tqdm
 
 from models import ModelWrapper, _past_length
-from data import load_aime2024
+from data import (
+    load_aime2024,
+    load_aime2025,
+    load_gsm8k,
+    load_gpqa_diamond,
+    load_arc_easy,
+    load_arc_challenge,
+    load_mbppplus,
+    load_humanevalplus,
+    load_medqa,
+)
 from utils import set_seed, auto_device
 
-# Try importing prompt builders (available in the repo).
-# Falls back to a simple chat template if not found.
 try:
     from prompts import build_agent_message_sequential_latent_mas
     _HAS_PROMPTS = True
 except ImportError:
     _HAS_PROMPTS = False
+
+
+# ── Dataset loader dispatch ────────────────────────────────────────────────
+
+TASK_LOADERS = {
+    "gsm8k":         lambda: load_gsm8k(split="test"),
+    "aime2024":      lambda: load_aime2024(split="train"),
+    "aime2025":      lambda: load_aime2025(split="train"),
+    "gpqa":          lambda: load_gpqa_diamond(split="test"),
+    "arc_easy":      lambda: load_arc_easy(split="test"),
+    "arc_challenge": lambda: load_arc_challenge(split="test"),
+    "mbppplus":      lambda: load_mbppplus(split="test"),
+    "humanevalplus": lambda: load_humanevalplus(split="test"),
+    "medqa":         lambda: load_medqa(split="test"),
+}
 
 
 # ── Metric helpers ──────────────────────────────────────────────────────────
@@ -51,15 +74,7 @@ def compute_step_metrics(
     hidden_state: torch.Tensor,
     lm_head: torch.nn.Module,
 ) -> Tuple[List[float], List[float]]:
-    """Entropy & perplexity from a last-layer hidden state via lm_head.
-
-    Args:
-        hidden_state: [B, D]  (last-layer hidden of the last token)
-        lm_head: the model's output projection (vocab head)
-
-    Returns:
-        (entropy_list, perplexity_list)  each length B
-    """
+    """Entropy & perplexity from a last-layer hidden state via lm_head."""
     logits = lm_head(hidden_state.to(lm_head.weight.dtype))  # [B, V]
     log_probs = torch.log_softmax(logits.float(), dim=-1)     # [B, V]
     probs = log_probs.exp()
@@ -75,20 +90,18 @@ def run_latent_steps_with_metrics(
     model_wrapper: ModelWrapper,
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
-    max_steps: int = 80,
+    latent_steps: int = 80,
 ) -> Tuple[List[List[float]], List[List[float]]]:
-    """Run latent recurrence for *max_steps*, recording metrics per step.
+    """Run latent recurrence for *latent_steps*, recording metrics per step.
 
     Returns:
         (all_entropies, all_perplexities)
-        Each is a list of length (max_steps + 1).  Each element is a list
-        of length B containing per-sample values.
-        Index 0 = initial hidden state (step 0, before any recurrence).
+        Each list has length (latent_steps + 1).
+        Index 0 = initial hidden state (before any recurrence).
     """
     model = model_wrapper.model
     device = model_wrapper.device
 
-    # Resolve lm_head
     lm_head = model.get_output_embeddings()
     if lm_head is None:
         lm_head = getattr(model, "lm_head", None)
@@ -113,8 +126,8 @@ def run_latent_steps_with_metrics(
     all_entropies.append(ent)
     all_perplexities.append(ppl)
 
-    # ── Latent recurrence: steps 1 .. max_steps ──
-    for step in range(max_steps):
+    # ── Latent recurrence: steps 1 .. latent_steps ──
+    for step in range(latent_steps):
         source_model = model
         latent_vec = model_wrapper._apply_latent_realignment(last_hidden, source_model)
         latent_embed = latent_vec.unsqueeze(1)  # [B, 1, D]
@@ -147,11 +160,6 @@ def run_latent_steps_with_metrics(
 # ── Prompt builder ──────────────────────────────────────────────────────────
 
 def build_prompt_messages(question: str, role: str, args) -> List[Dict]:
-    """Build the chat messages for a single agent.
-
-    Uses the repo's prompt builder if available, otherwise falls back to a
-    minimal system/user message.
-    """
     if _HAS_PROMPTS:
         return build_agent_message_sequential_latent_mas(
             role=role,
@@ -160,7 +168,6 @@ def build_prompt_messages(question: str, role: str, args) -> List[Dict]:
             method="latent_mas",
             args=args,
         )
-    # Fallback: minimal prompt
     return [
         {"role": "system", "content": "You are a helpful math assistant. Think step by step."},
         {"role": "user", "content": question},
@@ -174,30 +181,21 @@ def plot_metrics(
     metric_key: str,
     out_dir: str,
     bin_size: int = 5,
-    max_steps: int = 80,
+    latent_steps: int = 80,
 ):
-    """Generate scatter + line plots for a given metric.
-
-    Args:
-        results: the full JSON dict  {dataset: {case_i: {metric: [...]}}}
-        metric_key: "entropy" or "perplexity"
-        out_dir: directory for saving PNGs
-        bin_size: step binning width for the line plot
-        max_steps: maximum step index
-    """
     dataset_key = list(results.keys())[0]
     cases = results[dataset_key]
 
-    steps = np.arange(max_steps + 1)  # 0 .. max_steps
+    n_points = latent_steps + 1
+    steps = np.arange(n_points)
 
-    # Collect all traces  (n_cases × n_steps)
     all_traces = []
     for case_key in sorted(cases.keys(), key=lambda k: int(k.replace("case", ""))):
         vals = cases[case_key][metric_key]
-        all_traces.append(vals[: max_steps + 1])
-    all_traces = np.array(all_traces)  # [n_cases, max_steps+1]
+        all_traces.append(vals[:n_points])
+    all_traces = np.array(all_traces)
 
-    # ── 1. Scatter plot ─────────────────────────────────────────────────
+    # ── 1. Scatter plot ──
     fig, ax = plt.subplots(figsize=(14, 5))
     for i, trace in enumerate(all_traces):
         ax.scatter(steps, trace, s=8, alpha=0.45, label=f"case{i}" if i < 10 else None)
@@ -213,15 +211,13 @@ def plot_metrics(
     plt.close(fig)
     print(f"  Saved: {scatter_path}")
 
-    # ── 2. Binned line plot (mean ± std) ────────────────────────────────
-    n_bins = math.ceil((max_steps + 1) / bin_size)
-    bin_centers = []
-    bin_means = []
-    bin_stds = []
+    # ── 2. Binned line plot (mean +/- std) ──
+    n_bins = math.ceil(n_points / bin_size)
+    bin_centers, bin_means, bin_stds = [], [], []
     for b in range(n_bins):
         s = b * bin_size
-        e = min(s + bin_size, max_steps + 1)
-        chunk = all_traces[:, s:e]           # [n_cases, bin_width]
+        e = min(s + bin_size, n_points)
+        chunk = all_traces[:, s:e]
         bin_centers.append((s + e - 1) / 2)
         bin_means.append(chunk.mean())
         bin_stds.append(chunk.std())
@@ -253,22 +249,25 @@ def main():
         description="Measure hidden-state entropy/perplexity during LatentMAS latent recurrence."
     )
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-4B")
-    parser.add_argument("--task", type=str, default="aime2024", choices=["aime2024"])
-    parser.add_argument("--max_steps", type=int, default=80,
-                        help="Number of latent recurrence steps to run (0..max_steps)")
+    parser.add_argument("--task", type=str, default="aime2024",
+                        choices=list(TASK_LOADERS.keys()),
+                        help="Dataset/task to evaluate.")
+    parser.add_argument("--latent_steps", type=int, default=80,
+                        help="Number of latent recurrence steps (0..latent_steps)")
     parser.add_argument("--max_samples", type=int, default=-1,
-                        help="Max number of dataset cases to process (-1 = all)")
+                        help="Max dataset cases (-1 = all)")
     parser.add_argument("--prompt", type=str, default="sequential",
                         choices=["sequential", "hierarchical"])
     parser.add_argument("--agent_role", type=str, default="planner",
-                        help="Which agent role's prompt to use for the initial forward pass")
-    parser.add_argument("--device", type=str, default="cuda")
+                        help="Agent role prompt for initial forward pass")
+    parser.add_argument("--device", type=str, default="cuda",
+                        help="CUDA device, e.g. 'cuda', 'cuda:0', 'cuda:3'")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--latent_space_realign", action="store_true")
     parser.add_argument("--bin_size", type=int, default=5)
     parser.add_argument("--out_dir", type=str, default="example_logs",
                         help="Output directory for JSON and plots")
-    # Dummy args required by ModelWrapper / prompt builders
+    # Args needed by ModelWrapper / prompt builders
     parser.add_argument("--think", action="store_true")
     parser.add_argument("--method", type=str, default="latent_mas")
     parser.add_argument("--max_new_tokens", type=int, default=2048)
@@ -280,17 +279,18 @@ def main():
     device = auto_device(args.device)
     os.makedirs(args.out_dir, exist_ok=True)
 
-    print(f"[Config] model={args.model_name}, max_steps={args.max_steps}, "
-          f"realign={args.latent_space_realign}, device={device}")
+    print(f"[Config] model={args.model_name}, latent_steps={args.latent_steps}, "
+          f"task={args.task}, realign={args.latent_space_realign}, device={device}")
 
-    # ── Load model (HF backend only, no vLLM) ──
+    # ── Load model (HF backend only) ──
     model_wrapper = ModelWrapper(args.model_name, device, use_vllm=False, args=args)
 
     # ── Load dataset ──
-    dataset = list(load_aime2024(split="train"))
+    loader_fn = TASK_LOADERS[args.task]
+    dataset = list(loader_fn())
     if args.max_samples > 0:
-        dataset = dataset[: args.max_samples]
-    print(f"[Data] AIME2024: {len(dataset)} cases")
+        dataset = dataset[:args.max_samples]
+    print(f"[Data] {args.task}: {len(dataset)} cases")
 
     # ── Run analysis ──
     results: Dict = {}
@@ -312,35 +312,31 @@ def main():
         attention_mask = encoded["attention_mask"].to(device)
 
         ent_steps, ppl_steps = run_latent_steps_with_metrics(
-            model_wrapper, input_ids, attention_mask, max_steps=args.max_steps,
+            model_wrapper, input_ids, attention_mask, latent_steps=args.latent_steps,
         )
 
-        # ent_steps / ppl_steps: list of length (max_steps+1), each element is [B] list
-        # B=1 here, so flatten
+        # B=1, so flatten
         results[f"case{case_idx}"] = {
             "question": question,
             "entropy": [e[0] for e in ent_steps],
             "perplexity": [p[0] for p in ppl_steps],
         }
 
-        # Free KV-cache memory between cases
         torch.cuda.empty_cache()
 
-    # ── Wrap in dataset-level dict ──
-    output = {"aime2024": results}
+    # ── Wrap & save ──
+    output = {args.task: results}
 
-    # ── Save JSON ──
     json_path = os.path.join(args.out_dir, "latent_entropy_results.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
     print(f"\n[Saved] {json_path}")
 
-    # ── Generate plots ──
     print("[Plotting] ...")
     plot_metrics(output, "entropy", args.out_dir,
-                 bin_size=args.bin_size, max_steps=args.max_steps)
+                 bin_size=args.bin_size, latent_steps=args.latent_steps)
     plot_metrics(output, "perplexity", args.out_dir,
-                 bin_size=args.bin_size, max_steps=args.max_steps)
+                 bin_size=args.bin_size, latent_steps=args.latent_steps)
 
     print("\n[Done] All outputs saved to:", args.out_dir)
 
