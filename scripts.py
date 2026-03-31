@@ -456,209 +456,206 @@ def run_all_plots(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Top-token probabilities from latent hidden states
-# (Gaussian ±1.5σ cumulative cutoff)
+# Top-token probabilities from stored latent hidden states
+# (Gaussian ±1.5σ cumulative cutoff — deferred batch processing)
 # ═══════════════════════════════════════════════════════════════════════
 #
-# For each latent step, project the last hidden state through lm_head to
-# get the full vocabulary distribution, then collect top tokens in
-# descending probability order until the cumulative probability exceeds
-# the ±1.5σ threshold of a Gaussian (≈ 86.64%).
+# Hidden states are stored on CPU during inference, then batch-projected
+# through lm_head after all cases are done.  This avoids interleaving
+# lm_head calls inside the latent recurrence loop.
+#
+# For each hidden state, we project through lm_head → softmax, then
+# collect top tokens in descending probability order until cumulative
+# probability reaches the Gaussian ±σ mass threshold.
 #
 # Gaussian CDF:  P(|X| ≤ 1.5σ) = erf(1.5/√2) ≈ 0.8664
 #
-# Output format per step:
-#   {"token_1": 0.35, "token_2": 0.22, ..., "cumulative": 0.87}
-#
-# This shows how "concentrated" or "diffuse" the model's belief is at
-# each latent recurrence step — a complementary view to entropy.
+# Output per step:
+#   {token_1: prob(.2f), token_2: prob(.2f), ..., cumulative: float}
 
 GAUSSIAN_1_5_SIGMA_MASS = 0.8663855  # erf(1.5 / sqrt(2))
 
 
+def _compute_threshold(sigma: float) -> float:
+    """Compute the Gaussian ±σ probability mass: erf(σ / √2)."""
+    import math
+    return math.erf(sigma / (2 ** 0.5))
+
+
 @torch.no_grad()
-def get_top_tokens_at_hidden(
-    hidden: torch.Tensor,
-    lm_head: torch.nn.Module,
-    tokenizer,
+def batch_project_hidden_states(
+    model_wrapper,
+    all_cases_hidden_records: list,
+    out_path: str,
     sigma: float = 1.5,
-) -> Dict:
-    """Given a single hidden state [1, D] or [D], project through lm_head
-    and return top tokens until cumulative probability reaches the
-    Gaussian ±σ mass threshold.
+    gpu_batch_size: int = 128,
+    max_txt_cases: int = 30,
+):
+    """Batch-project all stored hidden states through lm_head and save
+    top-token probability lists to JSON + TXT files.
+
+    All hidden states are flattened into one big tensor, projected through
+    lm_head in GPU batches, then scattered back to per-case/per-agent/per-step
+    structure.
 
     Args:
-        hidden:    last hidden state, shape [1, D] or [D].
-        lm_head:   the model's output projection layer.
-        tokenizer: tokenizer for id → string conversion.
-        sigma:     number of standard deviations for the Gaussian cutoff
-                   (default 1.5 → ~86.64% mass).
+        model_wrapper:  ModelWrapper with .model and .tokenizer.
+        all_cases_hidden_records:  list of dicts built during the main loop:
+            [{ "case_idx": int,
+               "agents": [{ "agent_name": str, "agent_role": str,
+                            "exec_idx": int,
+                            "hiddens": [tensor [1,D] on CPU, ...] }, ...] }, ...]
+        out_path:         JSON output path (TXT uses same stem + _top_tokens.txt).
+        sigma:            Gaussian cutoff (default 1.5 → ~86.64%).
+        gpu_batch_size:   how many hiddens to project through lm_head at once.
+        max_txt_cases:    how many cases to write to the TXT file.
 
-    Returns:
-        dict with:
-          "tokens": {token_str: prob_float_2dp, ...}
-          "cumulative": float  (total probability of listed tokens)
-          "n_tokens": int
+    Output JSON structure:
+        { "sigma": 1.5, "threshold": 0.8664,
+          "cases": [{ "case_idx": 0,
+                      "agents": [{ "agent_name": "Planner", ...,
+                                   "steps": [{ "step": 0, "n_tokens": 42,
+                                               "cumulative": 0.87,
+                                               "tokens": {"The": 0.35, ...} }, ...] }, ...] }, ...] }
     """
-    import scipy.special as sp
+    if not all_cases_hidden_records:
+        return
 
-    threshold = float(sp.erf(sigma / (2 ** 0.5)))
-
-    h = hidden.view(1, -1).to(lm_head.weight.dtype)
-    logits = lm_head(h).float().squeeze(0)          # [V]
-    probs = torch.softmax(logits, dim=-1)            # [V]
-
-    sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-    sorted_probs = sorted_probs.cpu()
-    sorted_indices = sorted_indices.cpu()
-
-    cumsum = 0.0
-    token_probs = {}
-    for i in range(sorted_probs.shape[0]):
-        p = sorted_probs[i].item()
-        tok_id = sorted_indices[i].item()
-        tok_str = tokenizer.decode([tok_id])
-        token_probs[tok_str] = round(p, 2)
-        cumsum += p
-        if cumsum >= threshold:
-            break
-
-    return {
-        "tokens": token_probs,
-        "cumulative": round(cumsum, 4),
-        "n_tokens": len(token_probs),
-        "sigma": sigma,
-        "threshold": round(threshold, 4),
-    }
-
-
-@torch.no_grad()
-def collect_latent_top_tokens(
-    model_wrapper,
-    input_ids: torch.Tensor,
-    attention_mask: torch.Tensor,
-    latent_steps: int,
-    past_kv=None,
-    sigma: float = 1.5,
-) -> List[Dict]:
-    """Run latent recurrence for one agent and collect top-token probability
-    lists at each latent step (including step-0 after prompt prefill).
-
-    Returns:
-        List of dicts, one per step (length = latent_steps + 1).
-        Each dict has keys: tokens, cumulative, n_tokens, sigma, threshold.
-    """
-    from models import _past_length
-
+    threshold = _compute_threshold(sigma)
     model = model_wrapper.model
-    device = model_wrapper.device
+    device = next(model.parameters()).device
     lm_head = model.get_output_embeddings()
     if lm_head is None:
         lm_head = getattr(model, "lm_head", None)
     if lm_head is None:
         raise RuntimeError("Cannot locate lm_head / output embeddings.")
+    tokenizer = model_wrapper.tokenizer
 
-    # Extend attention mask for existing KV cache
-    attn = attention_mask.to(device)
-    if past_kv is not None:
-        plen = _past_length(past_kv)
-        if plen > 0:
-            past_mask = torch.ones(
-                (attn.shape[0], plen), dtype=attn.dtype, device=device,
-            )
-            attn = torch.cat([past_mask, attn], dim=-1)
+    # ── 1. Flatten all hidden states into [total_N, D] ──
+    flat_hiddens = []
+    index_map = []  # (case_list_idx, agent_list_idx, step_idx)
 
-    outputs = model(
-        input_ids=input_ids.to(device),
-        attention_mask=attn,
-        past_key_values=past_kv,
-        use_cache=True,
-        output_hidden_states=True,
-        return_dict=True,
-    )
-    past = outputs.past_key_values
-    last_hidden = outputs.hidden_states[-1][:, -1, :]  # [1, D]
+    for ci, case_rec in enumerate(all_cases_hidden_records):
+        for ai, agent_rec in enumerate(case_rec["agents"]):
+            for si, h in enumerate(agent_rec["hiddens"]):
+                flat_hiddens.append(h.view(-1))  # [D]
+                index_map.append((ci, ai, si))
 
-    results = []
+    total_N = len(flat_hiddens)
+    if total_N == 0:
+        return
 
-    # Step-0: after prompt prefill
-    step0 = get_top_tokens_at_hidden(
-        last_hidden, lm_head, model_wrapper.tokenizer, sigma=sigma,
-    )
-    step0["step"] = 0
-    results.append(step0)
+    flat_tensor = torch.stack(flat_hiddens, dim=0)  # [total_N, D]
+    print(f"[Top-Token] Projecting {total_N} hidden states through lm_head "
+          f"(σ={sigma}, threshold={threshold:.4f}) ...")
 
-    # Latent recurrence
-    for s in range(latent_steps):
-        latent_vec = model_wrapper._apply_latent_realignment(last_hidden, model)
-        latent_embed = latent_vec.unsqueeze(1)
+    # ── 2. Batched lm_head projection ──
+    all_sorted_probs = []
+    all_sorted_indices = []
 
-        plen = _past_length(past)
-        latent_mask = torch.ones((1, plen + 1), dtype=torch.long, device=device)
+    for start in range(0, total_N, gpu_batch_size):
+        end = min(start + gpu_batch_size, total_N)
+        chunk = flat_tensor[start:end].to(device=device, dtype=lm_head.weight.dtype)
+        logits = lm_head(chunk).float()                # [B, V]
+        probs = torch.softmax(logits, dim=-1)          # [B, V]
+        sp, si = torch.sort(probs, descending=True, dim=-1)
+        all_sorted_probs.append(sp.cpu())
+        all_sorted_indices.append(si.cpu())
+        del chunk, logits, probs, sp, si
+        torch.cuda.empty_cache()
 
-        outputs = model(
-            inputs_embeds=latent_embed,
-            attention_mask=latent_mask,
-            past_key_values=past,
-            use_cache=True,
-            output_hidden_states=True,
-            return_dict=True,
-        )
-        past = outputs.past_key_values
-        last_hidden = outputs.hidden_states[-1][:, -1, :]
+    all_sorted_probs = torch.cat(all_sorted_probs, dim=0)    # [total_N, V]
+    all_sorted_indices = torch.cat(all_sorted_indices, dim=0) # [total_N, V]
 
-        step_info = get_top_tokens_at_hidden(
-            last_hidden, lm_head, model_wrapper.tokenizer, sigma=sigma,
-        )
-        step_info["step"] = s + 1
-        results.append(step_info)
+    # ── 3. Extract top tokens per hidden state ──
+    print(f"[Top-Token] Extracting top tokens for {total_N} states ...")
 
-    return results, past
+    # Pre-build output structure
+    output_cases = []
+    for case_rec in all_cases_hidden_records:
+        case_out = {"case_idx": case_rec["case_idx"], "agents": []}
+        for agent_rec in case_rec["agents"]:
+            case_out["agents"].append({
+                "agent_name": agent_rec["agent_name"],
+                "agent_role": agent_rec["agent_role"],
+                "exec_idx":   agent_rec["exec_idx"],
+                "steps":      [None] * len(agent_rec["hiddens"]),
+            })
+        output_cases.append(case_out)
 
+    for flat_idx, (ci, ai, si_idx) in enumerate(index_map):
+        sorted_p = all_sorted_probs[flat_idx]    # [V]
+        sorted_i = all_sorted_indices[flat_idx]   # [V]
 
-def format_top_tokens_table(step_results: List[Dict]) -> str:
-    """Format top-token results into a readable string table.
+        cumsum = 0.0
+        token_probs = {}
+        for k in range(sorted_p.shape[0]):
+            p = sorted_p[k].item()
+            tok_id = sorted_i[k].item()
+            tok_str = tokenizer.decode([tok_id])
+            token_probs[tok_str] = round(p, 2)
+            cumsum += p
+            if cumsum >= threshold:
+                break
 
-    Args:
-        step_results: list from collect_latent_top_tokens().
+        output_cases[ci]["agents"][ai]["steps"][si_idx] = {
+            "step":       si_idx,
+            "tokens":     token_probs,
+            "cumulative": round(cumsum, 4),
+            "n_tokens":   len(token_probs),
+        }
 
-    Returns:
-        Multi-line string suitable for logging / printing.
-    """
-    lines = []
-    lines.append(f"Top-token probabilities (Gaussian ±{step_results[0].get('sigma', 1.5)}σ "
-                 f"cutoff ≈ {step_results[0].get('threshold', 0.8664) * 100:.2f}%)")
-    lines.append("=" * 72)
-
-    for entry in step_results:
-        step = entry["step"]
-        n = entry["n_tokens"]
-        cum = entry["cumulative"]
-        tok_str = ", ".join(
-            f"{tok}: {prob:.2f}" for tok, prob in entry["tokens"].items()
-        )
-        lines.append(f"  Step {step:>3d}  ({n:>4d} tokens, cum={cum:.4f}):  {tok_str}")
-
-    lines.append("=" * 72)
-    return "\n".join(lines)
-
-
-def save_top_tokens_json(
-    step_results: List[Dict],
-    out_path: str,
-    metadata: Optional[Dict] = None,
-):
-    """Save top-token results to a JSON file.
-
-    Args:
-        step_results: list from collect_latent_top_tokens().
-        out_path:     output file path.
-        metadata:     optional dict of extra info (case_idx, agent, etc.).
-    """
-    output = {
-        "metadata": metadata or {},
-        "steps": step_results,
+    # ── 4. Save JSON ──
+    result = {
+        "description": (
+            f"Top-token probabilities at each latent hidden state. "
+            f"Tokens collected in descending probability until cumulative mass "
+            f"reaches Gaussian ±{sigma}σ (threshold={threshold:.4f}, "
+            f"≈{threshold*100:.2f}%)."
+        ),
+        "sigma":     sigma,
+        "threshold": round(threshold, 4),
+        "cases":     output_cases,
     }
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
+        json.dump(result, f, ensure_ascii=False, indent=2)
     print(f"[Saved] {out_path}")
+    print(f"  → {len(output_cases)} cases, σ={sigma}, threshold={threshold:.4f}")
+
+    # ── 5. Save TXT (human-readable) ──
+    txt_path = out_path.replace(".json", ".txt")
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write(f"Latent hidden-state top-token probabilities\n")
+        f.write(f"Gaussian ±{sigma}σ cutoff ≈ {threshold*100:.2f}%\n")
+        f.write("=" * 80 + "\n\n")
+
+        for case_rec in output_cases[:max_txt_cases]:
+            case_idx = case_rec["case_idx"]
+            f.write(f"{'─' * 60}\nCase #{case_idx}\n{'─' * 60}\n")
+
+            for agent_rec in case_rec["agents"]:
+                name = agent_rec["agent_name"]
+                role = agent_rec["agent_role"]
+                eidx = agent_rec["exec_idx"]
+                f.write(f"\n  Agent: {name} ({role}, exec_idx={eidx})\n")
+
+                for step_info in agent_rec["steps"]:
+                    if step_info is None:
+                        continue
+                    step = step_info["step"]
+                    n = step_info["n_tokens"]
+                    cum = step_info["cumulative"]
+                    tok_str = ", ".join(
+                        f"{tok}: {prob:.2f}"
+                        for tok, prob in step_info["tokens"].items()
+                    )
+                    f.write(f"    Step {step:>3d}  "
+                            f"({n:>4d} tokens, cum={cum:.4f}):  "
+                            f"{tok_str}\n")
+            f.write("\n")
+
+        if len(output_cases) > max_txt_cases:
+            f.write(f"\n(Showing first {max_txt_cases} of {len(output_cases)} "
+                    f"cases; see JSON for all)\n")
+
+    print(f"[Saved] {txt_path}")
