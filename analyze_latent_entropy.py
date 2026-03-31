@@ -95,9 +95,8 @@ from scripts import (
     write_txt_case, write_txt_summary,
     # JSON logging
     build_step_semantics, save_json_results,
-    # Latent top-token probability analysis
-    get_top_tokens_at_hidden, collect_latent_top_tokens,
-    format_top_tokens_table, save_top_tokens_json,
+    # Latent top-token probability analysis (deferred batch)
+    batch_project_hidden_states,
     GAUSSIAN_1_5_SIGMA_MASS,
 )
 
@@ -218,16 +217,15 @@ def run_latent_agent_with_metrics(
     attention_mask: torch.Tensor,
     latent_steps: int,
     past_kv: Optional[Tuple] = None,
-) -> Tuple[Dict, Optional[Tuple], torch.Tensor, torch.Tensor]:
+) -> Tuple[Dict, Optional[Tuple], torch.Tensor, torch.Tensor, List[torch.Tensor]]:
     """Execute one non-judger agent via latent recurrence, recording
     per-step metrics.
 
     Returns:
-        (metrics_dict, updated_past_kv, last_hidden, last_log_probs)
+        (metrics_dict, updated_past_kv, last_hidden, last_log_probs, all_hiddens)
 
-    The last_hidden and last_log_probs are needed for inter-agent
-    boundary metrics: the start of the next agent can be compared
-    against the end state of this agent.
+    all_hiddens: list of [1, D] tensors on CPU, length = latent_steps + 1
+        (step-0 after prompt prefill, then one per latent recurrence step).
     """
     model = model_wrapper.model
     device = model_wrapper.device
@@ -255,12 +253,14 @@ def run_latent_agent_with_metrics(
     last_hidden = outputs.hidden_states[-1][:, -1, :]  # [1, D]
 
     entropies, kl_divs, cosines = [], [], []
+    all_hiddens: List[torch.Tensor] = []
 
     # Step-0: after processing the agent's prompt tokens
     ent, _, _, log_probs = compute_all_metrics(last_hidden, lm_head)
     entropies.append(ent)
     kl_divs.append(None)
     cosines.append(None)
+    all_hiddens.append(last_hidden.detach().cpu())
     prev_log_probs = log_probs
     prev_hidden = last_hidden.clone()
 
@@ -291,6 +291,7 @@ def run_latent_agent_with_metrics(
         entropies.append(ent)
         kl_divs.append(kl)
         cosines.append(cos)
+        all_hiddens.append(last_hidden.detach().cpu())
 
         prev_log_probs = log_probs
         prev_hidden = last_hidden.clone()
@@ -301,7 +302,7 @@ def run_latent_agent_with_metrics(
         "cosine_similarity": cosines,
         "n_steps": latent_steps,
     }
-    return metrics, past, last_hidden, prev_log_probs
+    return metrics, past, last_hidden, prev_log_probs, all_hiddens
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -678,6 +679,8 @@ def main():
     boundary_rows: List[Dict] = []      # inter-agent boundary metrics
     cases_meta: List[Dict] = []         # per-case result metadata
     n_correct = 0
+    # Deferred hidden-state storage for latent_mas top-token analysis
+    all_cases_hidden_records: List[Dict] = []
 
     for case_idx, item in enumerate(tqdm(dataset, desc="Analyzing")):
         question = item["question"]
@@ -707,6 +710,8 @@ def main():
         #
         if args.method == "latent_mas":
             past_kv: Optional[Tuple] = None
+            # Collect hidden states per agent for deferred top-token analysis
+            case_hidden_records: List[Dict] = []
 
             for agent in agents:
                 messages = build_prompt_latent(agent.role, question, args)
@@ -722,7 +727,7 @@ def main():
 
                 if agent.role != "judger":
                     # ── Latent recurrence agent ──
-                    metrics, past_kv, end_hidden, end_log_probs = \
+                    metrics, past_kv, end_hidden, end_log_probs, all_hiddens = \
                         run_latent_agent_with_metrics(
                             model_wrapper, input_ids, attn_mask,
                             latent_steps=args.latent_steps,
@@ -733,6 +738,14 @@ def main():
                         "name": agent.name, "role": agent.role,
                         "type": ag_type, "exec_idx": exec_idx, **metrics,
                     }
+
+                    # Store hidden states for deferred tokenization
+                    case_hidden_records.append({
+                        "agent_name": agent.name,
+                        "agent_role": agent.role,
+                        "exec_idx":   exec_idx,
+                        "hiddens":    all_hiddens,  # list of [1, D] CPU tensors
+                    })
 
                     # Compute inter-agent boundary metric
                     # (step-0 of this agent vs end of previous agent)
@@ -811,6 +824,13 @@ def main():
                         "values":     metrics[mk],
                     })
                 exec_idx += 1
+
+            # Store this case's hidden records for deferred top-token analysis
+            if case_hidden_records:
+                all_cases_hidden_records.append({
+                    "case_idx": case_idx,
+                    "agents": case_hidden_records,
+                })
 
         # ─────────────────────────────────────────────────
         #  TextMAS
@@ -958,6 +978,23 @@ def main():
             )
 
         torch.cuda.empty_cache()
+
+    # ═════════════════════════════════════════════════════════════════
+    # Deferred top-token analysis  (latent_mas only)
+    # ═════════════════════════════════════════════════════════════════
+    # All hidden states were stored on CPU during inference.
+    # Now batch-project them through lm_head → softmax → top tokens.
+    if args.method == "latent_mas" and all_cases_hidden_records:
+        print(f"\n[Top-token analysis] Processing {len(all_cases_hidden_records)} cases ...")
+        from scripts import batch_project_hidden_states
+        top_tokens_path = os.path.join(
+            args.out_dir, f"{prefix}_latent_top_tokens.json",
+        )
+        batch_project_hidden_states(
+            model_wrapper, all_cases_hidden_records,
+            out_path=top_tokens_path,
+            sigma=1.5,
+        )
 
     # ── Summary ──
     total = len(dataset)
