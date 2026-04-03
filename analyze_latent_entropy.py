@@ -1,41 +1,46 @@
 """
-analyze_latent_entropy.py  (v3 — ground-truth-aligned, exec_idx coloring)
-=========================================================================
-Measures per-step **entropy**, **KL divergence**, and **cosine similarity**
-of hidden states across all methods, strictly reflecting the multi-agent
-execution pipeline defined in `run.py` and `methods/latent_mas.py`.
+analyze_latent_entropy.py  (v4 — stability metrics refactor)
+=============================================================
+Measures per-step **normalized entropy**, **JS divergence**, **cosine
+similarity**, **angular distance**, and **perplexity** of hidden states
+across all methods, strictly reflecting the multi-agent execution pipeline
+defined in ``run.py`` and ``methods/latent_mas.py``.
 
-Changes from v2
+Changes from v3
 ----------------
-1. **Exec-idx-based coloring** — scatter, aggregated, and concatenated plots
-   all color by execution order (exec_idx), NOT by agent role.  Role is still
-   shown in labels.
+1. **Metric taxonomy refactored**:
+   - Normalized entropy in [0, 1] replaces raw entropy as primary confidence metric.
+   - Jensen-Shannon divergence in [0, 1] replaces raw KL as primary drift metric.
+   - Angular distance in [0, 1] added alongside cosine similarity in [-1, 1].
+   - Raw KL divergence removed from tracked metrics.
 
-2. **Inter-agent transition metrics** — KL divergence and cosine similarity
-   are measured across agent boundaries (end of agent k-1 → start of agent k).
-   These are recorded in a separate data table and plotted as a bar/line chart.
+2. **Decision-time vs post-update split** (decode agents):
+   - Stage A (decision_time): metrics computed from the hidden state *before*
+     token sampling (normalized entropy, JS divergence vs previous decision).
+   - Stage B (post_update): metrics computed *after* the sampled token is fed
+     back (JS divergence, cosine similarity, angular distance vs previous
+     post-update state).
 
-3. **Step semantics documented** — "step" in LatentMAS non-judger agents
-   means one latent recurrence step (hidden→realign→forward).  In TextMAS and
-   the judger, "step" means one autoregressive decoded token.  These are
-   fundamentally different compute units and are NOT directly comparable.
+3. **Latent-step category** (latent agents):
+   - Latent recurrence steps are NOT decoded-token steps and are recorded
+     under an explicit ``latent_step`` category with confidence and hidden
+     drift sub-metrics.
 
-4. **Ground-truth alignment verified** against:
-   - `methods/__init__.py`: Agent order = Planner(0) → Critic(1) → Refiner(2) → Judger(3)
-   - `methods/latent_mas.py`:
-     • Non-judger agents: prompt is tokenized, run through the model to get
-       initial hidden state, then `latent_steps` recurrence iterations are
-       performed.  The KV cache is accumulated and passed to the next agent.
-     • Judger: prompt is tokenized, run with accumulated KV cache, then
-       autoregressive decoding.
-     • Context string is always "" for all agents (LatentMAS does not use
-       text context between agents — communication is purely via KV cache).
-   - `methods/text_mas.py`:
-     • Every agent (including judger) decodes text autoregressively.
-     • No KV-cache sharing — each agent gets a fresh forward pass.
-     • Context accumulates as text: `context += f"[{name}]:\\n{output}\\n\\n"`
-   - `run.py`: Confirms agent iteration order, batch processing, answer
-     evaluation logic.
+4. **Boundary metrics fixed**:
+   - Now uses true current-agent start state (step-0 after prompt prefill) vs
+     previous-agent end state, instead of end-to-end comparison.
+   - Boundary rows include JS divergence, cosine similarity, angular distance,
+     source/target roles, and boundary type.
+
+5. **Perplexity-based error propagation analysis**:
+   - Perplexity = exp(entropy) computed at every analysis step.
+   - LatentMAS: per latent step; TextMAS: up to 80 sampled steps per agent.
+   - Aggregated plots with interpretation rule.
+
+6. **Top-token analysis**: Fixed top-5 with Jaccard overlap (replaces Gaussian
+   cumulative-mass cutoff).
+
+7. **File naming**: ``_stability_results.json`` replaces ``_entropy_results.json``.
 
 Usage (unchanged CLI; analysis adapts internally):
   # latent_mas
@@ -90,14 +95,14 @@ from scripts import (
     get_exec_color, _build_exec_label, make_prefix,
     # Plotting
     plot_per_agent_metric, plot_concatenated_overview,
-    plot_boundary_metrics, run_all_plots,
+    plot_boundary_metrics, plot_perplexity, run_all_plots,
     # TXT logging
     write_txt_case, write_txt_summary,
     # JSON logging
     build_step_semantics, save_json_results,
-    # Latent top-token probability analysis (deferred batch)
+    # Top-token probability analysis (deferred batch, fixed top-5)
     batch_project_hidden_states,
-    GAUSSIAN_1_5_SIGMA_MASS,
+    TOP_K,
 )
 
 # ── prompt builders (latent_mas & text_mas use different ones) ──────────
@@ -142,14 +147,12 @@ TASK_LOADERS = {
 }
 
 
-
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # Metric helpers
 # ═══════════════════════════════════════════════════════════════════════
 
 def _get_lm_head(model):
+    """Locate the language model head (output embeddings)."""
     lm_head = model.get_output_embeddings()
     if lm_head is None:
         lm_head = getattr(model, "lm_head", None)
@@ -159,56 +162,124 @@ def _get_lm_head(model):
 
 
 @torch.no_grad()
-def compute_all_metrics(
-    hidden: torch.Tensor,
-    lm_head: torch.nn.Module,
-    prev_log_probs: Optional[torch.Tensor] = None,
-    prev_hidden: Optional[torch.Tensor] = None,
-) -> Tuple[float, Optional[float], Optional[float], torch.Tensor]:
-    """Compute entropy, KL divergence, cosine similarity in a single lm_head pass.
+def compute_distribution_metrics(
+    logits: torch.Tensor,
+    prev_probs: Optional[torch.Tensor] = None,
+    vocab_size: Optional[int] = None,
+) -> Dict:
+    """Compute distribution-space metrics from logits.
+
+    Args:
+        logits:     [1, V] or [V] raw logits from lm_head.
+        prev_probs: [1, V] or [V] probability distribution from the previous
+                    step (used for JS divergence).  None if no previous step.
+        vocab_size: vocabulary size for normalized entropy.  If None, inferred
+                    from logits.shape[-1].
 
     Returns:
-        (entropy, kl_div_or_None, cosine_sim_or_None, current_log_probs)
+        Dict with keys:
+            logits              — [1, V] tensor (detached, float32)
+            log_probs           — [1, V] tensor
+            probs               — [1, V] tensor
+            normalized_entropy  — float in [0, 1]
+            raw_entropy         — float (nats, used for perplexity)
+            js_divergence       — float in [0, 1] or None
+            perplexity          — float = exp(raw_entropy)
     """
-    logits = lm_head(hidden.to(lm_head.weight.dtype))
-    log_probs = torch.log_softmax(logits.float(), dim=-1)  # [B, V]
-    probs = log_probs.exp()
+    logits_f = logits.float().view(1, -1)                        # [1, V]
+    V = vocab_size or logits_f.shape[-1]
 
-    # Entropy:  H = -Σ p·log(p)
-    entropy = -(probs * log_probs).sum(dim=-1).item()
+    log_probs = torch.log_softmax(logits_f, dim=-1)              # [1, V]
+    probs = log_probs.exp()                                      # [1, V]
 
-    # KL(p_curr ‖ p_prev)
-    kl = None
-    if prev_log_probs is not None:
-        kl = (probs * (log_probs - prev_log_probs)).sum(dim=-1).item()
+    # Raw entropy:  H = -sum p * log(p)
+    raw_entropy = -(probs * log_probs).sum(dim=-1).item()
 
-    # Cosine similarity in hidden space
-    cosine = None
-    if prev_hidden is not None:
-        cosine = F.cosine_similarity(
-            hidden.float().view(1, -1),
-            prev_hidden.float().view(1, -1),
-            dim=-1,
-        ).item()
+    # Normalized entropy:  H / log(V)  in [0, 1]
+    log_V = math.log(V) if V > 1 else 1.0
+    norm_entropy = raw_entropy / log_V
 
-    return entropy, kl, cosine, log_probs
+    # Perplexity: exp(H)
+    perplexity = math.exp(raw_entropy)
+
+    # Jensen-Shannon divergence vs previous distribution
+    js_div = None
+    if prev_probs is not None:
+        prev_p = prev_probs.float().view(1, -1)
+        curr_p = probs
+        m = 0.5 * (curr_p + prev_p)
+        # Clamp to avoid log(0)
+        m_clamped = m.clamp_min(1e-12)
+        curr_clamped = curr_p.clamp_min(1e-12)
+        prev_clamped = prev_p.clamp_min(1e-12)
+        kl_curr_m = (curr_p * (curr_clamped.log() - m_clamped.log())).sum(dim=-1)
+        kl_prev_m = (prev_p * (prev_clamped.log() - m_clamped.log())).sum(dim=-1)
+        # JS in [0, ln(2)] with base-e; normalize by ln(2) to get [0, 1]
+        js_raw = 0.5 * kl_curr_m + 0.5 * kl_prev_m
+        js_div = (js_raw / math.log(2)).clamp(0.0, 1.0).item()
+
+    return {
+        "logits":             logits_f.detach(),
+        "log_probs":          log_probs.detach(),
+        "probs":              probs.detach(),
+        "normalized_entropy": norm_entropy,
+        "raw_entropy":        raw_entropy,
+        "js_divergence":      js_div,
+        "perplexity":         perplexity,
+    }
+
+
+@torch.no_grad()
+def compute_hidden_drift_metrics(
+    hidden: torch.Tensor,
+    prev_hidden: Optional[torch.Tensor] = None,
+) -> Dict:
+    """Compute hidden-space drift metrics between adjacent hidden states.
+
+    Args:
+        hidden:      [1, D] or [D] current hidden state.
+        prev_hidden: [1, D] or [D] previous hidden state, or None at step-0.
+
+    Returns:
+        Dict with:
+            cosine_similarity  — float in [-1, 1] or None
+            angular_distance   — float in [0, 1]  or None
+    """
+    if prev_hidden is None:
+        return {"cosine_similarity": None, "angular_distance": None}
+
+    cos = F.cosine_similarity(
+        hidden.float().view(1, -1),
+        prev_hidden.float().view(1, -1),
+        dim=-1,
+    ).item()
+
+    # Angular distance = arccos(clamp(cos)) / pi  in [0, 1]
+    cos_clamped = max(-1.0, min(1.0, cos))
+    ang = math.acos(cos_clamped) / math.pi
+
+    return {"cosine_similarity": cos, "angular_distance": ang}
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # Core: latent recurrence for one non-judger agent  (LatentMAS)
 # ═══════════════════════════════════════════════════════════════════════
 #
-# Ground truth (models.py → generate_latent_batch):
+# Ground truth (models.py -> generate_latent_batch):
 #   1. Run full forward pass on the agent's prompt tokens (with KV cache).
 #   2. Take last_hidden = hidden_states[-1][:, -1, :].
 #   3. For each latent step:
 #        a. latent_vec = _apply_latent_realignment(last_hidden, model)
-#        b. Feed latent_vec as inputs_embeds (shape [1,1,D]) into the model
-#           with the accumulated KV cache.
+#        b. Feed latent_vec as inputs_embeds ([1,1,D]) with KV cache.
 #        c. Update last_hidden from the new output.
-#   4. Return accumulated KV cache (includes prompt + all latent steps).
+#   4. Return accumulated KV cache.
 #
 # The analysis mirrors this exactly, adding per-step metric recording.
+#
+# Latent-step metrics are recorded under the ``latent_step`` category:
+#   - confidence: normalized_entropy, js_divergence (vs previous latent step)
+#   - hidden drift: cosine_similarity, angular_distance (vs previous hidden)
+# These are NOT decode-agent decision_time/post_update metrics.
 
 @torch.no_grad()
 def run_latent_agent_with_metrics(
@@ -217,19 +288,32 @@ def run_latent_agent_with_metrics(
     attention_mask: torch.Tensor,
     latent_steps: int,
     past_kv: Optional[Tuple] = None,
-) -> Tuple[Dict, Optional[Tuple], torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+) -> Tuple:
     """Execute one non-judger agent via latent recurrence, recording
-    per-step metrics.
+    per-step metrics under the ``latent_step`` category.
 
     Returns:
-        (metrics_dict, updated_past_kv, last_hidden, last_log_probs, all_hiddens)
+        (metrics_dict, updated_past_kv,
+         start_hidden, start_log_probs, start_probs,
+         end_hidden, end_log_probs,
+         all_hiddens, perplexity_values)
+
+    start_hidden / start_log_probs / start_probs:
+        The step-0 state immediately after prompt prefill.  Used for
+        true boundary comparison with the previous agent's end state.
+
+    end_hidden / end_log_probs:
+        Final state after all latent recurrence steps.
 
     all_hiddens: list of [1, D] tensors on CPU, length = latent_steps + 1
         (step-0 after prompt prefill, then one per latent recurrence step).
+
+    perplexity_values: list of floats, one per step (including step-0).
     """
     model = model_wrapper.model
     device = model_wrapper.device
     lm_head = _get_lm_head(model)
+    vocab_size = lm_head.weight.shape[0]
 
     # ── Extend attention mask for existing KV cache ──
     attn = attention_mask.to(device)
@@ -252,17 +336,36 @@ def run_latent_agent_with_metrics(
     past = outputs.past_key_values
     last_hidden = outputs.hidden_states[-1][:, -1, :]  # [1, D]
 
-    entropies, kl_divs, cosines = [], [], []
+    # ── Metric accumulators ──
+    norm_entropies: List[Optional[float]] = []
+    js_divs: List[Optional[float]] = []
+    cosines: List[Optional[float]] = []
+    angular_dists: List[Optional[float]] = []
+    perplexities: List[float] = []
     all_hiddens: List[torch.Tensor] = []
 
-    # Step-0: after processing the agent's prompt tokens
-    ent, _, _, log_probs = compute_all_metrics(last_hidden, lm_head)
-    entropies.append(ent)
-    kl_divs.append(None)
-    cosines.append(None)
+    # ── Step-0: after processing the agent's prompt tokens ──
+    logits_0 = lm_head(last_hidden.to(lm_head.weight.dtype))
+    dist_0 = compute_distribution_metrics(logits_0, prev_probs=None,
+                                          vocab_size=vocab_size)
+
+    norm_entropies.append(dist_0["normalized_entropy"])
+    js_divs.append(None)           # no previous step
+    cosines.append(None)           # no previous hidden
+    angular_dists.append(None)     # no previous hidden
+    perplexities.append(dist_0["perplexity"])
     all_hiddens.append(last_hidden.detach().cpu())
-    prev_log_probs = log_probs
+
+    # Save step-0 state for boundary comparison
+    start_hidden = last_hidden.detach().clone()
+    start_log_probs = dist_0["log_probs"].detach().clone()
+    start_probs = dist_0["probs"].detach().clone()
+
+    prev_probs = dist_0["probs"]
     prev_hidden = last_hidden.clone()
+
+    # Track the most recent dist for end-state (handles latent_steps == 0)
+    latest_dist = dist_0
 
     # ── Latent recurrence (matches generate_latent_batch exactly) ──
     for _ in range(latent_steps):
@@ -283,26 +386,39 @@ def run_latent_agent_with_metrics(
         past = outputs.past_key_values
         last_hidden = outputs.hidden_states[-1][:, -1, :]
 
-        ent, kl, cos, log_probs = compute_all_metrics(
-            last_hidden, lm_head,
-            prev_log_probs=prev_log_probs,
-            prev_hidden=prev_hidden,
-        )
-        entropies.append(ent)
-        kl_divs.append(kl)
-        cosines.append(cos)
+        logits_s = lm_head(last_hidden.to(lm_head.weight.dtype))
+        dist_s = compute_distribution_metrics(logits_s, prev_probs=prev_probs,
+                                              vocab_size=vocab_size)
+        drift_s = compute_hidden_drift_metrics(last_hidden, prev_hidden)
+
+        norm_entropies.append(dist_s["normalized_entropy"])
+        js_divs.append(dist_s["js_divergence"])
+        cosines.append(drift_s["cosine_similarity"])
+        angular_dists.append(drift_s["angular_distance"])
+        perplexities.append(dist_s["perplexity"])
         all_hiddens.append(last_hidden.detach().cpu())
 
-        prev_log_probs = log_probs
+        prev_probs = dist_s["probs"]
         prev_hidden = last_hidden.clone()
+        latest_dist = dist_s
 
+    # Build the metrics dict using the latent_step schema
     metrics = {
-        "entropy": entropies,
-        "kl_divergence": kl_divs,
-        "cosine_similarity": cosines,
-        "n_steps": latent_steps,
+        "normalized_entropy":  norm_entropies,
+        "js_divergence":       js_divs,
+        "cosine_similarity":   cosines,
+        "angular_distance":    angular_dists,
+        "n_steps":             latent_steps,
+        "metric_category":     "latent_step",
     }
-    return metrics, past, last_hidden, prev_log_probs, all_hiddens
+
+    end_hidden = last_hidden.detach().clone()
+    end_log_probs = latest_dist["log_probs"].detach().clone()
+
+    return (metrics, past,
+            start_hidden, start_log_probs, start_probs,
+            end_hidden, end_log_probs,
+            all_hiddens, perplexities)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -315,6 +431,15 @@ def run_latent_agent_with_metrics(
 #   - LatentMAS judger: Gets the accumulated KV cache from all prior
 #     latent agents, then decodes autoregressively.
 #   - Baseline: Single forward pass + decode, no multi-agent pipeline.
+#
+# Metric phases per decode step:
+#   Stage A -- decision_time (before sampling):
+#     - normalized_entropy
+#     - js_divergence vs previous decision-time distribution
+#   Stage B -- post_update (after feeding sampled token back):
+#     - js_divergence vs previous post-update distribution
+#     - cosine_similarity vs previous post-update hidden
+#     - angular_distance vs previous post-update hidden
 
 @torch.no_grad()
 def run_decode_agent_with_metrics(
@@ -326,20 +451,30 @@ def run_decode_agent_with_metrics(
     past_kv: Optional[Tuple] = None,
     temperature: float = 0.6,
     top_p: float = 0.95,
-) -> Tuple[Dict, str, int, torch.Tensor, torch.Tensor]:
-    """Decode tokens for one agent, recording per-step metrics for the first
-    *n_metric_steps* decoded tokens.
+) -> Tuple:
+    """Decode tokens for one agent, recording per-step metrics with explicit
+    decision-time / post-update separation for the first *n_metric_steps*
+    decoded tokens.
 
     Returns:
         (metrics_dict, decoded_text, total_decoded_tokens,
-         last_hidden, last_log_probs)
+         start_hidden, start_log_probs, start_probs,
+         end_hidden, end_log_probs,
+         all_decision_perplexities)
 
-    last_hidden and last_log_probs are returned for inter-agent boundary
-    metric computation.
+    start_hidden / start_log_probs / start_probs:
+        Step-0 state after prompt prefill, for boundary comparison.
+
+    end_hidden / end_log_probs:
+        Final hidden state and log-probs after all decoding.
+
+    all_decision_perplexities:
+        Perplexity at every decision-time step (including step-0 prefill).
     """
     model = model_wrapper.model
     device = model_wrapper.device
     lm_head = _get_lm_head(model)
+    vocab_size = lm_head.weight.shape[0]
 
     # ── Extend attention mask for existing KV cache ──
     attn = attention_mask.to(device)
@@ -363,26 +498,53 @@ def run_decode_agent_with_metrics(
     past = outputs.past_key_values
     last_hidden = outputs.hidden_states[-1][:, -1, :]
 
-    entropies, kl_divs, cosines = [], [], []
+    # ── Metric accumulators ──
+    # Decision-time metrics (Stage A)
+    dt_norm_entropies: List[Optional[float]] = []
+    dt_js_divs: List[Optional[float]] = []
+    # Post-update metrics (Stage B)
+    pu_js_divs: List[Optional[float]] = []
+    pu_cosines: List[Optional[float]] = []
+    pu_angular_dists: List[Optional[float]] = []
+    # Perplexity (from decision-time)
+    all_perplexities: List[float] = []
 
-    ent, _, _, log_probs = compute_all_metrics(last_hidden, lm_head)
-    entropies.append(ent)
-    kl_divs.append(None)
-    cosines.append(None)
-    prev_log_probs = log_probs
-    prev_hidden = last_hidden.clone()
+    # ── Step-0 (prefill): decision-time snapshot ──
+    logits_0 = lm_head(last_hidden.to(lm_head.weight.dtype))
+    dist_0 = compute_distribution_metrics(logits_0, prev_probs=None,
+                                          vocab_size=vocab_size)
+
+    dt_norm_entropies.append(dist_0["normalized_entropy"])
+    dt_js_divs.append(None)        # no previous decision
+    pu_js_divs.append(None)        # no post-update at step-0
+    pu_cosines.append(None)
+    pu_angular_dists.append(None)
+    all_perplexities.append(dist_0["perplexity"])
+
+    # Save step-0 state for boundary comparison
+    start_hidden = last_hidden.detach().clone()
+    start_log_probs = dist_0["log_probs"].detach().clone()
+    start_probs = dist_0["probs"].detach().clone()
+
+    # Tracking state for decision-time JS
+    prev_decision_probs = dist_0["probs"]
+    # Tracking state for post-update drift
+    prev_post_update_probs: Optional[torch.Tensor] = None
+    prev_post_update_hidden: Optional[torch.Tensor] = None
 
     # ── Autoregressive decoding ──
     generated_ids: List[int] = []
     eos_id = model_wrapper.tokenizer.eos_token_id
 
     for step in range(max_new_tokens):
-        logits = lm_head(last_hidden.to(lm_head.weight.dtype))
-        logits_f = logits.float()
+        # ── Stage A: decision-time metrics (current hidden, before sampling) ──
+        logits_dt = lm_head(last_hidden.to(lm_head.weight.dtype))
+        logits_f = logits_dt.float()
 
+        # Sampling
         if temperature > 0:
-            probs = F.softmax(logits_f / temperature, dim=-1)
-            sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
+            probs_sample = F.softmax(logits_f / temperature, dim=-1)
+            sorted_probs, sorted_idx = torch.sort(probs_sample, descending=True, dim=-1)
             cumsum = sorted_probs.cumsum(dim=-1)
             mask = cumsum - sorted_probs > top_p
             sorted_probs[mask] = 0.0
@@ -398,7 +560,18 @@ def run_decode_agent_with_metrics(
         if tok_id == eos_id:
             break
 
-        # Forward next token
+        # Record decision-time metrics for first n_metric_steps
+        if step < n_metric_steps:
+            dist_dt = compute_distribution_metrics(
+                logits_dt, prev_probs=prev_decision_probs,
+                vocab_size=vocab_size,
+            )
+            dt_norm_entropies.append(dist_dt["normalized_entropy"])
+            dt_js_divs.append(dist_dt["js_divergence"])
+            all_perplexities.append(dist_dt["perplexity"])
+            prev_decision_probs = dist_dt["probs"]
+
+        # ── Forward the sampled token ──
         next_input = next_token.unsqueeze(-1)
         plen = _past_length(past)
         new_mask = torch.ones((1, plen + 1), dtype=torch.long, device=device)
@@ -414,34 +587,67 @@ def run_decode_agent_with_metrics(
         past = outputs.past_key_values
         last_hidden = outputs.hidden_states[-1][:, -1, :]
 
-        # Record metrics only for the first n_metric_steps
+        # ── Stage B: post-update metrics (after token feedback) ──
         if step < n_metric_steps:
-            ent, kl, cos, log_probs_new = compute_all_metrics(
-                last_hidden, lm_head,
-                prev_log_probs=prev_log_probs,
-                prev_hidden=prev_hidden,
+            logits_pu = lm_head(last_hidden.to(lm_head.weight.dtype))
+            dist_pu = compute_distribution_metrics(
+                logits_pu, prev_probs=prev_post_update_probs,
+                vocab_size=vocab_size,
             )
-            entropies.append(ent)
-            kl_divs.append(kl)
-            cosines.append(cos)
-            prev_log_probs = log_probs_new
-            prev_hidden = last_hidden.clone()
+            drift_pu = compute_hidden_drift_metrics(
+                last_hidden, prev_post_update_hidden,
+            )
+            pu_js_divs.append(dist_pu["js_divergence"])
+            pu_cosines.append(drift_pu["cosine_similarity"])
+            pu_angular_dists.append(drift_pu["angular_distance"])
+
+            prev_post_update_probs = dist_pu["probs"]
+            prev_post_update_hidden = last_hidden.clone()
 
     decoded_text = model_wrapper.tokenizer.decode(
         generated_ids, skip_special_tokens=True,
     ).strip()
 
+    # The final end state for boundary comparison
+    logits_end = lm_head(last_hidden.to(lm_head.weight.dtype))
+    dist_end = compute_distribution_metrics(logits_end, vocab_size=vocab_size)
+    end_hidden = last_hidden.detach().clone()
+    end_log_probs = dist_end["log_probs"].detach().clone()
+
+    # ── Build unified metrics dict ──
+    # For plotting compatibility, the primary METRIC_KEYS arrays use:
+    #   normalized_entropy -> decision-time values
+    #   js_divergence      -> post-update values
+    #   cosine_similarity  -> post-update values
+    #   angular_distance   -> post-update values
+    # The full detail is available in the JSON under decision_time / post_update.
     metrics = {
-        "entropy": entropies,
-        "kl_divergence": kl_divs,
-        "cosine_similarity": cosines,
-        "n_steps": len(entropies) - 1,  # excluding step-0
+        # Flat arrays for plotting (unified view)
+        "normalized_entropy":  dt_norm_entropies,
+        "js_divergence":       pu_js_divs,
+        "cosine_similarity":   pu_cosines,
+        "angular_distance":    pu_angular_dists,
+        "n_steps":             len(dt_norm_entropies) - 1,  # excluding step-0
+        "metric_category":     "decode",
+        # Detailed phase-separated metrics for JSON
+        "decision_time": {
+            "normalized_entropy": dt_norm_entropies,
+            "js_divergence":      dt_js_divs,
+        },
+        "post_update": {
+            "js_divergence":    pu_js_divs,
+            "cosine_similarity": pu_cosines,
+            "angular_distance":  pu_angular_dists,
+        },
     }
-    return metrics, decoded_text, len(generated_ids), last_hidden, prev_log_probs
+    return (metrics, decoded_text, len(generated_ids),
+            start_hidden, start_log_probs, start_probs,
+            end_hidden, end_log_probs,
+            all_perplexities)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Prompt builders  (dispatch to the correct one per method × topology)
+# Prompt builders  (dispatch to the correct one per method x topology)
 # ═══════════════════════════════════════════════════════════════════════
 
 def build_prompt_latent(role: str, question: str, args) -> List[Dict]:
@@ -473,7 +679,7 @@ def build_prompt_text(role: str, question: str, context: str, args) -> List[Dict
 
     Ground truth note: In text_mas.py, context accumulates the text output
     of all prior agents.  Each agent receives a fresh prompt with full
-    context — no KV cache is shared.
+    context -- no KV cache is shared.
     """
     if not _HAS_PROMPTS:
         content = f"{question}\n\n{context}" if context else question
@@ -523,9 +729,6 @@ def evaluate_answer(final_text: str, item: Dict, task: str) -> Tuple[str, str, b
         return pred, gold, ok
 
 
-
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # Tokenise helper  (single-item, returns [1, L])
 # ═══════════════════════════════════════════════════════════════════════
@@ -538,43 +741,78 @@ def _tokenize_prompt(model_wrapper: ModelWrapper, prompt_text: str, device):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Inter-agent boundary metric computation
+# Inter-agent boundary metric computation  (FIXED)
 # ═══════════════════════════════════════════════════════════════════════
 
 @torch.no_grad()
 def compute_boundary_metrics(
-    curr_hidden: torch.Tensor,
-    curr_log_probs: torch.Tensor,
-    prev_hidden: Optional[torch.Tensor],
-    prev_log_probs: Optional[torch.Tensor],
-    lm_head: torch.nn.Module,
+    current_start_hidden: torch.Tensor,
+    current_start_probs: torch.Tensor,
+    previous_end_hidden: Optional[torch.Tensor],
+    previous_end_probs: Optional[torch.Tensor],
 ) -> Dict:
-    """Compute KL divergence and cosine similarity at an agent boundary.
+    """Compute JS divergence, cosine similarity, and angular distance at
+    an agent boundary.
 
-    Compares the START state of the current agent (after its prompt prefill,
-    i.e. step-0) against the END state of the previous agent.
+    Uses the TRUE start state of the current agent (step-0 after prompt
+    prefill) vs the TRUE end state of the previous agent.
 
-    Returns dict with 'boundary_kl' and 'boundary_cosine' (or None if
-    no previous agent).
+    Args:
+        current_start_hidden:  [1, D] hidden at current agent step-0.
+        current_start_probs:   [1, V] probs at current agent step-0.
+        previous_end_hidden:   [1, D] hidden at end of previous agent (or None).
+        previous_end_probs:    [1, V] probs at end of previous agent (or None).
+
+    Returns:
+        Dict with boundary_js_divergence, boundary_cosine_similarity,
+        boundary_angular_distance (all None if no previous agent).
     """
-    if prev_hidden is None or prev_log_probs is None:
-        return {"boundary_kl": None, "boundary_cosine": None}
+    if previous_end_hidden is None or previous_end_probs is None:
+        return {
+            "boundary_js_divergence":     None,
+            "boundary_cosine_similarity": None,
+            "boundary_angular_distance":  None,
+        }
 
-    # KL(p_curr_start ‖ p_prev_end)
-    curr_probs = curr_log_probs.exp()
-    kl = (curr_probs * (curr_log_probs - prev_log_probs)).sum(dim=-1).item()
+    # JS divergence between current start and previous end
+    curr_p = current_start_probs.float().view(1, -1)
+    prev_p = previous_end_probs.float().view(1, -1)
+    m = 0.5 * (curr_p + prev_p)
+    m_clamped = m.clamp_min(1e-12)
+    curr_clamped = curr_p.clamp_min(1e-12)
+    prev_clamped = prev_p.clamp_min(1e-12)
+    kl_curr_m = (curr_p * (curr_clamped.log() - m_clamped.log())).sum(dim=-1)
+    kl_prev_m = (prev_p * (prev_clamped.log() - m_clamped.log())).sum(dim=-1)
+    js_raw = 0.5 * kl_curr_m + 0.5 * kl_prev_m
+    js_div = (js_raw / math.log(2)).clamp(0.0, 1.0).item()
 
-    # Cosine similarity in hidden space
-    cosine = F.cosine_similarity(
-        curr_hidden.float().view(1, -1),
-        prev_hidden.float().view(1, -1),
-        dim=-1,
-    ).item()
+    # Hidden-space drift
+    drift = compute_hidden_drift_metrics(current_start_hidden, previous_end_hidden)
 
-    return {"boundary_kl": kl, "boundary_cosine": cosine}
+    return {
+        "boundary_js_divergence":     js_div,
+        "boundary_cosine_similarity": drift["cosine_similarity"],
+        "boundary_angular_distance":  drift["angular_distance"],
+    }
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Perplexity sampling for TextMAS
+# ═══════════════════════════════════════════════════════════════════════
 
+def _sample_perplexity_steps(
+    perplexities: List[float],
+    max_points: int = 80,
+) -> List[float]:
+    """Sample up to max_points evenly-spaced perplexity values from a list.
+
+    If the list has fewer than max_points elements, return all of them.
+    """
+    n = len(perplexities)
+    if n <= max_points:
+        return list(perplexities)
+    indices = np.linspace(0, n - 1, max_points, dtype=int)
+    return [perplexities[i] for i in indices]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -583,7 +821,9 @@ def compute_boundary_metrics(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Multi-agent hidden-state analysis: entropy, KL, cosine."
+        description="Multi-agent hidden-state stability analysis: "
+                    "normalized entropy, JS divergence, cosine similarity, "
+                    "angular distance, perplexity."
     )
     parser.add_argument("--method", type=str, required=True,
                         choices=["baseline", "text_mas", "latent_mas"])
@@ -637,17 +877,21 @@ def main():
     print("=" * 60)
     if args.method == "latent_mas":
         print(f"  LatentMAS non-judger agents: each 'step' = 1 latent recurrence")
-        print(f"    (hidden → realign → forward with KV cache).  Total = {args.latent_steps} per agent.")
+        print(f"    (hidden -> realign -> forward with KV cache).  Total = {args.latent_steps} per agent.")
+        print(f"    Metrics category: latent_step (confidence + hidden drift).")
         print(f"  LatentMAS judger: each 'step' = 1 decoded token.")
         print(f"    Total = up to {args.max_new_tokens} tokens, metrics for first {args.n_metric_steps}.")
+        print(f"    Metrics split: decision_time (confidence) + post_update (drift).")
         print(f"  These step types are NOT directly comparable across agents.")
     elif args.method == "text_mas":
         print(f"  TextMAS all agents: each 'step' = 1 decoded token.")
         print(f"    Metrics recorded for first {args.n_metric_steps} tokens per agent.")
-        print(f"  No KV cache sharing — each agent gets a fresh forward pass.")
+        print(f"    Metrics split: decision_time (confidence) + post_update (drift).")
+        print(f"  No KV cache sharing -- each agent gets a fresh forward pass.")
     else:
         print(f"  Baseline: each 'step' = 1 decoded token.")
         print(f"    Metrics recorded for first {args.n_metric_steps} tokens.")
+        print(f"    Metrics split: decision_time (confidence) + post_update (drift).")
     print("=" * 60)
     print()
 
@@ -665,7 +909,6 @@ def main():
     txt_file = open(txt_path, "w", encoding="utf-8")
 
     # ── Agent name mapping for TextMAS hierarchical context formatting ──
-    # (matches text_mas.py agent_name_map_for_prompt_hierarchical exactly)
     _HIER_NAME_MAP = {
         "Planner": "Math Agent",  "Critic": "Science Agent",
         "Refiner": "Code Agent",  "Judger": "Task Summrizer",
@@ -677,6 +920,7 @@ def main():
 
     data_rows: List[Dict] = []          # flat intra-agent metric rows
     boundary_rows: List[Dict] = []      # inter-agent boundary metrics
+    perplexity_rows: List[Dict] = []    # per-agent perplexity data
     cases_meta: List[Dict] = []         # per-case result metadata
     n_correct = 0
     # Deferred hidden-state storage for latent_mas top-token analysis
@@ -689,28 +933,16 @@ def main():
         exec_idx = 0   # global execution counter within this case
 
         # Track end-of-agent state for boundary metrics
-        prev_agent_hidden: Optional[torch.Tensor] = None
-        prev_agent_log_probs: Optional[torch.Tensor] = None
-        prev_agent_label: Optional[str] = None
+        prev_agent_end_hidden: Optional[torch.Tensor] = None
+        prev_agent_end_probs: Optional[torch.Tensor] = None
+        prev_agent_role: Optional[str] = None
+        prev_agent_type: Optional[str] = None
 
         # ─────────────────────────────────────────────────
         #  LatentMAS
         # ─────────────────────────────────────────────────
-        #
-        # Ground truth execution (latent_mas.py → run_batch):
-        #   - Iterates agents = [Planner, Critic, Refiner, Judger]
-        #   - For non-judger:
-        #       1. Build prompt (context="" always)
-        #       2. Tokenize and optionally prepend <think>
-        #       3. generate_latent_batch() → latent recurrence, KV cache accumulated
-        #   - For judger:
-        #       1. Build prompt (context="" always)
-        #       2. Tokenize and optionally prepend <think>
-        #       3. generate_text_batch() with accumulated past_kv → decode
-        #
         if args.method == "latent_mas":
             past_kv: Optional[Tuple] = None
-            # Collect hidden states per agent for deferred top-token analysis
             case_hidden_records: List[Dict] = []
 
             for agent in agents:
@@ -727,7 +959,10 @@ def main():
 
                 if agent.role != "judger":
                     # ── Latent recurrence agent ──
-                    metrics, past_kv, end_hidden, end_log_probs, all_hiddens = \
+                    (metrics, past_kv,
+                     start_hidden, start_log_probs, start_probs,
+                     end_hidden, end_log_probs,
+                     all_hiddens, ppl_values) = \
                         run_latent_agent_with_metrics(
                             model_wrapper, input_ids, attn_mask,
                             latent_steps=args.latent_steps,
@@ -739,45 +974,56 @@ def main():
                         "type": ag_type, "exec_idx": exec_idx, **metrics,
                     }
 
-                    # Store hidden states for deferred tokenization
+                    # Store hidden states for deferred top-token analysis
                     case_hidden_records.append({
                         "agent_name": agent.name,
                         "agent_role": agent.role,
                         "exec_idx":   exec_idx,
-                        "hiddens":    all_hiddens,  # list of [1, D] CPU tensors
+                        "hiddens":    all_hiddens,
                     })
 
-                    # Compute inter-agent boundary metric
-                    # (step-0 of this agent vs end of previous agent)
-                    start_hidden_ent = metrics["entropy"][0] if metrics["entropy"] else None
+                    # ── Boundary: true start vs previous end ──
                     boundary = compute_boundary_metrics(
-                        # Use the hidden state AFTER prefill (step 0) for this agent
-                        # We recorded metrics starting from step-0 in run_latent_agent_with_metrics
-                        # But we need the actual hidden to compare — for simplicity,
-                        # we compare end-of-prev with end-of-current (which is the
-                        # information the next agent actually receives)
-                        end_hidden, end_log_probs,
-                        prev_agent_hidden, prev_agent_log_probs,
-                        _get_lm_head(model_wrapper.model),
+                        start_hidden, start_probs,
+                        prev_agent_end_hidden, prev_agent_end_probs,
                     )
                     boundary["transition"] = (
-                        f"exec{exec_idx-1}→exec{exec_idx}" if exec_idx > 0
+                        f"exec{exec_idx-1}->exec{exec_idx}" if exec_idx > 0
                         else None
                     )
                     boundary["case_idx"] = case_idx
                     boundary["source_exec_idx"] = exec_idx - 1 if exec_idx > 0 else None
                     boundary["target_exec_idx"] = exec_idx
+                    boundary["source_role"] = prev_agent_role
                     boundary["target_role"] = agent.role
+                    boundary["boundary_type"] = (
+                        f"{prev_agent_type}->latent" if prev_agent_type else None
+                    )
                     if boundary["transition"] is not None:
                         boundary_rows.append(boundary)
 
-                    prev_agent_hidden = end_hidden.clone()
-                    prev_agent_log_probs = end_log_probs.clone()
+                    # Update previous-agent tracking with END state
+                    prev_agent_end_hidden = end_hidden.clone()
+                    prev_agent_end_probs = end_log_probs.exp().detach().clone()
+                    prev_agent_role = agent.role
+                    prev_agent_type = "latent"
+
+                    # Perplexity row (all latent steps)
+                    perplexity_rows.append({
+                        "case_idx":          case_idx,
+                        "exec_idx":          exec_idx,
+                        "agent_role":        agent.role,
+                        "agent_type":        "latent",
+                        "perplexity_values": ppl_values,
+                    })
 
                 else:
                     # ── Judger: decode with accumulated KV cache ──
                     past_for_dec = past_kv if args.latent_steps > 0 else None
-                    metrics, decoded_text, n_decoded, end_hidden, end_log_probs = \
+                    (metrics, decoded_text, n_decoded,
+                     start_hidden, start_log_probs, start_probs,
+                     end_hidden, end_log_probs,
+                     ppl_values) = \
                         run_decode_agent_with_metrics(
                             model_wrapper, input_ids, attn_mask,
                             max_new_tokens=args.max_new_tokens,
@@ -794,26 +1040,39 @@ def main():
                         "decoded_tokens": n_decoded, **metrics,
                     }
 
-                    # Boundary metric for judger start
+                    # ── Boundary: true start vs previous end ──
                     boundary = compute_boundary_metrics(
-                        end_hidden, end_log_probs,
-                        prev_agent_hidden, prev_agent_log_probs,
-                        _get_lm_head(model_wrapper.model),
+                        start_hidden, start_probs,
+                        prev_agent_end_hidden, prev_agent_end_probs,
                     )
                     boundary["transition"] = (
-                        f"exec{exec_idx-1}→exec{exec_idx}" if exec_idx > 0
+                        f"exec{exec_idx-1}->exec{exec_idx}" if exec_idx > 0
                         else None
                     )
                     boundary["case_idx"] = case_idx
                     boundary["source_exec_idx"] = exec_idx - 1 if exec_idx > 0 else None
                     boundary["target_exec_idx"] = exec_idx
+                    boundary["source_role"] = prev_agent_role
                     boundary["target_role"] = agent.role
+                    boundary["boundary_type"] = (
+                        f"{prev_agent_type}->decode" if prev_agent_type else None
+                    )
                     if boundary["transition"] is not None:
                         boundary_rows.append(boundary)
 
+                    # Perplexity: sample 80 points from decode agent
+                    sampled_ppl = _sample_perplexity_steps(ppl_values, max_points=80)
+                    perplexity_rows.append({
+                        "case_idx":          case_idx,
+                        "exec_idx":          exec_idx,
+                        "agent_role":        agent.role,
+                        "agent_type":        "decode",
+                        "perplexity_values": sampled_ppl,
+                    })
+
                 agent_records.append(ag_info)
 
-                # ── Emit flat rows ──
+                # ── Emit flat rows for plotting ──
                 for mk in METRIC_KEYS:
                     data_rows.append({
                         "case_idx":   case_idx,
@@ -835,16 +1094,6 @@ def main():
         # ─────────────────────────────────────────────────
         #  TextMAS
         # ─────────────────────────────────────────────────
-        #
-        # Ground truth execution (text_mas.py → run_batch):
-        #   - Iterates agents = [Planner, Critic, Refiner, Judger]
-        #   - For ALL agents (including judger):
-        #       1. Build prompt with accumulated text context
-        #       2. Tokenize
-        #       3. Decode autoregressively (vLLM or HF generate_text_batch)
-        #       4. Append output to context (except judger)
-        #   - No KV cache sharing — each agent starts fresh
-        #
         elif args.method == "text_mas":
             context = ""
 
@@ -860,12 +1109,15 @@ def main():
                 )
 
                 # TextMAS: ALL agents decode (no KV cache from prior agents)
-                metrics, decoded_text, n_decoded, end_hidden, end_log_probs = \
+                (metrics, decoded_text, n_decoded,
+                 start_hidden, start_log_probs, start_probs,
+                 end_hidden, end_log_probs,
+                 ppl_values) = \
                     run_decode_agent_with_metrics(
                         model_wrapper, input_ids, attn_mask,
                         max_new_tokens=args.max_new_tokens,
                         n_metric_steps=args.n_metric_steps,
-                        past_kv=None,  # No KV cache sharing in TextMAS
+                        past_kv=None,
                         temperature=args.temperature,
                         top_p=args.top_p,
                     )
@@ -878,25 +1130,41 @@ def main():
                 }
                 agent_records.append(ag_info)
 
-                # Boundary metric
+                # ── Boundary: true start vs previous end ──
                 boundary = compute_boundary_metrics(
-                    end_hidden, end_log_probs,
-                    prev_agent_hidden, prev_agent_log_probs,
-                    _get_lm_head(model_wrapper.model),
+                    start_hidden, start_probs,
+                    prev_agent_end_hidden, prev_agent_end_probs,
                 )
                 boundary["transition"] = (
-                    f"exec{exec_idx-1}→exec{exec_idx}" if exec_idx > 0
+                    f"exec{exec_idx-1}->exec{exec_idx}" if exec_idx > 0
                     else None
                 )
                 boundary["case_idx"] = case_idx
                 boundary["source_exec_idx"] = exec_idx - 1 if exec_idx > 0 else None
                 boundary["target_exec_idx"] = exec_idx
+                boundary["source_role"] = prev_agent_role
                 boundary["target_role"] = agent.role
+                boundary["boundary_type"] = (
+                    f"{prev_agent_type}->decode" if prev_agent_type else None
+                )
                 if boundary["transition"] is not None:
                     boundary_rows.append(boundary)
 
-                prev_agent_hidden = end_hidden.clone()
-                prev_agent_log_probs = end_log_probs.clone()
+                # Update tracking with END state
+                prev_agent_end_hidden = end_hidden.clone()
+                prev_agent_end_probs = end_log_probs.exp().detach().clone()
+                prev_agent_role = agent.role
+                prev_agent_type = "decode"
+
+                # Perplexity: sample 80 points from each agent's decode
+                sampled_ppl = _sample_perplexity_steps(ppl_values, max_points=80)
+                perplexity_rows.append({
+                    "case_idx":          case_idx,
+                    "exec_idx":          exec_idx,
+                    "agent_role":        agent.role,
+                    "agent_type":        "decode",
+                    "perplexity_values": sampled_ppl,
+                })
 
                 for mk in METRIC_KEYS:
                     data_rows.append({
@@ -917,7 +1185,7 @@ def main():
                     final_text = decoded_text
 
         # ─────────────────────────────────────────────────
-        #  Baseline
+        #  Baseline  (no boundary metrics — single agent, explicit skip)
         # ─────────────────────────────────────────────────
         elif args.method == "baseline":
             messages = build_prompt_latent("planner", question, args)
@@ -930,7 +1198,10 @@ def main():
             input_ids, attn_mask = _tokenize_prompt(
                 model_wrapper, prompt_text, device,
             )
-            metrics, decoded_text, n_decoded, end_hidden, end_log_probs = \
+            (metrics, decoded_text, n_decoded,
+             start_hidden, start_log_probs, start_probs,
+             end_hidden, end_log_probs,
+             ppl_values) = \
                 run_decode_agent_with_metrics(
                     model_wrapper, input_ids, attn_mask,
                     max_new_tokens=args.max_new_tokens,
@@ -947,6 +1218,16 @@ def main():
                 "decoded_tokens": n_decoded, **metrics,
             }
             agent_records.append(ag_info)
+            # Baseline: no boundary metrics — single agent, explicit skip
+
+            sampled_ppl = _sample_perplexity_steps(ppl_values, max_points=80)
+            perplexity_rows.append({
+                "case_idx":          case_idx,
+                "exec_idx":          0,
+                "agent_role":        "baseline",
+                "agent_type":        "decode",
+                "perplexity_values": sampled_ppl,
+            })
 
             for mk in METRIC_KEYS:
                 data_rows.append({
@@ -982,18 +1263,14 @@ def main():
     # ═════════════════════════════════════════════════════════════════
     # Deferred top-token analysis  (latent_mas only)
     # ═════════════════════════════════════════════════════════════════
-    # All hidden states were stored on CPU during inference.
-    # Now batch-project them through lm_head → softmax → top tokens.
     if args.method == "latent_mas" and all_cases_hidden_records:
         print(f"\n[Top-token analysis] Processing {len(all_cases_hidden_records)} cases ...")
-        from scripts import batch_project_hidden_states
         top_tokens_path = os.path.join(
             args.out_dir, f"{prefix}_latent_top_tokens.json",
         )
         batch_project_hidden_states(
             model_wrapper, all_cases_hidden_records,
             out_path=top_tokens_path,
-            sigma=1.5,
         )
 
     # ── Summary ──
@@ -1006,13 +1283,13 @@ def main():
     # ── Save JSON ──
     json_path = save_json_results(
         args, prefix, agents, cases_meta,
-        data_rows, boundary_rows,
+        data_rows, boundary_rows, perplexity_rows,
         total, n_correct, accuracy,
     )
 
     # ── Plots ──
     run_all_plots(
-        data_rows, boundary_rows,
+        data_rows, boundary_rows, perplexity_rows,
         args.out_dir, prefix, args.method,
         bin_size=args.bin_size,
     )
