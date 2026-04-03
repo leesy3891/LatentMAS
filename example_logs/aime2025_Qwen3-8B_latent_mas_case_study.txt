@@ -6,33 +6,37 @@ Find the sum of all integer bases $b>9$ for which $17_{b}$ is a divisor of $97_{
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.9971
-  KL div:  mean=0.926663, max=29.809620
+  Norm. entropy: first=0.0000, last=0.1674
+  JS div:  mean=0.150444, max=1.000000
   Cosine:  mean=0.902701, min=0.527608
+  Angular: mean=0.114053, max=0.323089
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.0610
-  KL div:  mean=0.599151, max=31.310331
+  Norm. entropy: first=0.0000, last=0.0889
+  JS div:  mean=0.056057, max=0.999596
   Cosine:  mean=0.960989, min=0.621449
+  Angular: mean=0.055949, max=0.286544
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.9631
-  KL div:  mean=0.653334, max=34.553566
+  Norm. entropy: first=0.0000, last=0.0807
+  JS div:  mean=0.070788, max=0.946533
   Cosine:  mean=0.952055, min=0.601519
+  Angular: mean=0.085739, max=0.294563
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 1961
-  Entropy: first=0.0000, last=0.0002
-  KL div:  mean=38.147330, max=69.020470
-  Cosine:  mean=0.471741, min=0.061571
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.999834, max=1.000000
+  Cosine:  mean=0.471770, min=0.061571
+  Angular: mean=0.341066, max=0.480389
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=1.533914, Cosine=0.876785
-  exec1→exec2: KL=0.472922, Cosine=0.901134
-  exec2→exec3: KL=9.353899, Cosine=0.225204
+  exec0->exec1 [latent->latent]: JS=0.999998, Cos=0.442930, Ang=0.353939
+  exec1->exec2 [latent->latent]: JS=0.999999, Cos=0.498316, Ang=0.333952
+  exec2->exec3 [latent->decode]: JS=0.999994, Cos=0.493621, Ang=0.335673
 
 [Response]
 <think>
@@ -166,33 +170,37 @@ On $\triangle ABC$ points $A,D,E$, and $B$ lie that order on side $\overline{AB}
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=3.2397
-  KL div:  mean=0.406910, max=26.374649
+  Norm. entropy: first=0.0000, last=0.2716
+  JS div:  mean=0.030511, max=1.000000
   Cosine:  mean=0.978861, min=0.482661
+  Angular: mean=0.037373, max=0.339670
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=3.1684
-  KL div:  mean=0.466123, max=32.173889
+  Norm. entropy: first=0.0000, last=0.2656
+  JS div:  mean=0.030320, max=0.989920
   Cosine:  mean=0.983675, min=0.559691
+  Angular: mean=0.024818, max=0.310920
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.9728
-  KL div:  mean=0.549341, max=35.499569
+  Norm. entropy: first=0.0000, last=0.2492
+  JS div:  mean=0.037139, max=0.999927
   Cosine:  mean=0.984453, min=0.571614
+  Angular: mean=0.023678, max=0.306317
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 9177
-  Entropy: first=0.0000, last=0.0001
-  KL div:  mean=26.841935, max=45.312500
-  Cosine:  mean=0.514744, min=0.170571
+  Norm. entropy: first=0.0000, last=0.0006
+  JS div:  mean=0.992021, max=1.000000
+  Cosine:  mean=0.515205, min=0.170571
+  Angular: mean=0.323410, max=0.445439
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.699034, Cosine=0.982540
-  exec1→exec2: KL=0.216972, Cosine=0.984668
-  exec2→exec3: KL=16.903492, Cosine=0.396109
+  exec0->exec1 [latent->latent]: JS=1.000000, Cos=0.063524, Ang=0.479766
+  exec1->exec2 [latent->latent]: JS=1.000000, Cos=0.101785, Ang=0.467545
+  exec2->exec3 [latent->decode]: JS=1.000000, Cos=0.101519, Ang=0.467630
 
 [Response]
 <think>
@@ -838,33 +846,37 @@ The 9 members of a baseball team went to an ice cream parlor after their game. E
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.2592
-  KL div:  mean=1.050838, max=27.437489
+  Norm. entropy: first=0.0000, last=0.1055
+  JS div:  mean=0.167465, max=1.000000
   Cosine:  mean=0.937700, min=0.514449
+  Angular: mean=0.094303, max=0.327996
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.9348
-  KL div:  mean=0.761265, max=29.992886
+  Norm. entropy: first=0.0000, last=0.1622
+  JS div:  mean=0.090177, max=0.998753
   Cosine:  mean=0.970776, min=0.713856
+  Angular: mean=0.056566, max=0.246947
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.6229
-  KL div:  mean=0.615956, max=30.582930
+  Norm. entropy: first=0.0000, last=0.1360
+  JS div:  mean=0.047493, max=0.955831
   Cosine:  mean=0.973617, min=0.558396
+  Angular: mean=0.050449, max=0.311417
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 2547
-  Entropy: first=0.0000, last=0.0006
-  KL div:  mean=32.144853, max=57.437500
-  Cosine:  mean=0.464978, min=-0.172095
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.993923, max=1.000000
+  Cosine:  mean=0.464808, min=-0.172095
+  Angular: mean=0.342926, max=0.555054
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.574917, Cosine=0.944680
-  exec1→exec2: KL=0.229811, Cosine=0.981130
-  exec2→exec3: KL=19.099277, Cosine=0.291441
+  exec0->exec1 [latent->latent]: JS=0.999997, Cos=0.371661, Ang=0.378788
+  exec1->exec2 [latent->latent]: JS=0.999991, Cos=0.477556, Ang=0.341523
+  exec2->exec3 [latent->decode]: JS=0.999981, Cos=0.428458, Ang=0.359057
 
 [Response]
 <think>
@@ -1038,33 +1050,37 @@ Find the number of ordered pairs $(x,y)$, where both $x$ and $y$ are integers be
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.9988
-  KL div:  mean=0.631153, max=29.312321
+  Norm. entropy: first=0.0000, last=0.0837
+  JS div:  mean=0.078567, max=1.000000
   Cosine:  mean=0.963426, min=0.539351
+  Angular: mean=0.067369, max=0.318670
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.3042
-  KL div:  mean=0.586137, max=31.327816
+  Norm. entropy: first=0.0000, last=0.1093
+  JS div:  mean=0.036514, max=0.960577
   Cosine:  mean=0.978101, min=0.537929
+  Angular: mean=0.046766, max=0.319207
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.6458
-  KL div:  mean=0.451724, max=17.574705
+  Norm. entropy: first=0.0000, last=0.1380
+  JS div:  mean=0.049160, max=0.992809
   Cosine:  mean=0.974959, min=0.603819
+  Angular: mean=0.053691, max=0.293645
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 4505
-  Entropy: first=0.0000, last=0.0000
-  KL div:  mean=36.039306, max=61.750000
-  Cosine:  mean=0.537724, min=0.079177
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.964707, max=1.000000
+  Cosine:  mean=0.538342, min=0.079177
+  Angular: mean=0.315905, max=0.474771
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.061415, Cosine=0.970320
-  exec1→exec2: KL=0.055140, Cosine=0.984340
-  exec2→exec3: KL=19.486704, Cosine=0.250157
+  exec0->exec1 [latent->latent]: JS=1.000000, Cos=0.322780, Ang=0.395383
+  exec1->exec2 [latent->latent]: JS=0.999999, Cos=0.374444, Ang=0.377834
+  exec2->exec3 [latent->decode]: JS=0.999997, Cos=0.412418, Ang=0.364684
 
 [Response]
 <think>
@@ -1252,33 +1268,37 @@ There are $8!=40320$ eight-digit positive integers that use each of the digits $
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0001, last=2.1728
-  KL div:  mean=0.678438, max=26.843721
+  Norm. entropy: first=0.0000, last=0.1821
+  JS div:  mean=0.111738, max=1.000000
   Cosine:  mean=0.943807, min=0.512405
+  Angular: mean=0.089421, max=0.328755
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.4287
-  KL div:  mean=0.798325, max=30.749088
+  Norm. entropy: first=0.0000, last=0.1198
+  JS div:  mean=0.089717, max=0.999818
   Cosine:  mean=0.968139, min=0.681908
+  Angular: mean=0.065126, max=0.261150
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.3223
-  KL div:  mean=0.592434, max=33.312153
+  Norm. entropy: first=0.0000, last=0.1947
+  JS div:  mean=0.053100, max=0.989927
   Cosine:  mean=0.978923, min=0.551165
+  Angular: mean=0.033891, max=0.314184
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 8138
-  Entropy: first=0.0000, last=0.0000
-  KL div:  mean=34.774955, max=58.680508
-  Cosine:  mean=0.500279, min=0.107331
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.968644, max=1.000000
+  Cosine:  mean=0.500458, min=0.107331
+  Angular: mean=0.330212, max=0.465769
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=1.856650, Cosine=0.912563
-  exec1→exec2: KL=0.675804, Cosine=0.927441
-  exec2→exec3: KL=14.263644, Cosine=0.189090
+  exec0->exec1 [latent->latent]: JS=0.999993, Cos=0.418371, Ang=0.362601
+  exec1->exec2 [latent->latent]: JS=0.999990, Cos=0.501438, Ang=0.332805
+  exec2->exec3 [latent->decode]: JS=0.999994, Cos=0.345719, Ang=0.387635
 
 [Response]
 <think>
@@ -1797,33 +1817,37 @@ An isosceles trapezoid has an inscribed circle tangent to each of its four sides
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.8342
-  KL div:  mean=0.532034, max=29.530922
+  Norm. entropy: first=0.0000, last=0.2376
+  JS div:  mean=0.031582, max=1.000000
   Cosine:  mean=0.973634, min=0.398509
+  Angular: mean=0.032439, max=0.369528
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.3623
-  KL div:  mean=0.676644, max=29.080976
+  Norm. entropy: first=0.0000, last=0.1980
+  JS div:  mean=0.035433, max=0.997823
   Cosine:  mean=0.982339, min=0.356205
+  Angular: mean=0.022208, max=0.384070
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0314, last=1.6830
-  KL div:  mean=0.031169, max=0.466592
+  Norm. entropy: first=0.0026, last=0.1411
+  JS div:  mean=0.010127, max=0.130210
   Cosine:  mean=0.990000, min=0.345455
+  Angular: mean=0.018875, max=0.387725
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 1193
-  Entropy: first=0.0020, last=0.0000
-  KL div:  mean=22.136728, max=42.743156
-  Cosine:  mean=0.739277, min=0.256540
+  Norm. entropy: first=0.0002, last=0.0001
+  JS div:  mean=0.975268, max=1.000000
+  Cosine:  mean=0.740727, min=0.256540
+  Angular: mean=0.226155, max=0.417417
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.519845, Cosine=0.976477
-  exec1→exec2: KL=0.641837, Cosine=0.979489
-  exec2→exec3: KL=23.595728, Cosine=0.265052
+  exec0->exec1 [latent->latent]: JS=0.999999, Cos=0.150300, Ang=0.451976
+  exec1->exec2 [latent->latent]: JS=0.514598, Cos=0.324000, Ang=0.394972
+  exec2->exec3 [latent->decode]: JS=0.999984, Cos=0.215066, Ang=0.431003
 
 [Response]
 <think>
@@ -1891,33 +1915,37 @@ The twelve letters $A,B,C,D,E,F,G,H,I,J,K$, and $L$ are randomly grouped into si
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=3.3983
-  KL div:  mean=0.571708, max=28.531160
+  Norm. entropy: first=0.0000, last=0.2849
+  JS div:  mean=0.065216, max=1.000000
   Cosine:  mean=0.951980, min=0.532017
+  Angular: mean=0.072449, max=0.321434
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.1186
-  KL div:  mean=0.460437, max=31.107779
+  Norm. entropy: first=0.0000, last=0.1776
+  JS div:  mean=0.024048, max=0.912674
   Cosine:  mean=0.986587, min=0.681550
+  Angular: mean=0.019907, max=0.261306
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.3867
-  KL div:  mean=0.483468, max=34.676567
+  Norm. entropy: first=0.0000, last=0.2001
+  JS div:  mean=0.025651, max=0.999887
   Cosine:  mean=0.979227, min=0.528482
+  Angular: mean=0.029147, max=0.322761
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 10745
-  Entropy: first=0.0000, last=0.0000
-  KL div:  mean=33.375422, max=59.062500
-  Cosine:  mean=0.539438, min=0.167185
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.985212, max=1.000000
+  Cosine:  mean=0.540500, min=0.167185
+  Angular: mean=0.314624, max=0.446532
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=1.594958, Cosine=0.812087
-  exec1→exec2: KL=0.188705, Cosine=0.986848
-  exec2→exec3: KL=22.681700, Cosine=0.222202
+  exec0->exec1 [latent->latent]: JS=0.999991, Cos=0.442138, Ang=0.354220
+  exec1->exec2 [latent->latent]: JS=1.000000, Cos=0.299994, Ang=0.403015
+  exec2->exec3 [latent->decode]: JS=1.000000, Cos=0.391513, Ang=0.371952
 
 [Response]
 <think>
@@ -2403,33 +2431,37 @@ Let $k$ be real numbers such that the system $|25+20i-z|=5$ and $|z-4-k|=|z-3i-k
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0001, last=1.3563
-  KL div:  mean=0.654440, max=25.562487
+  Norm. entropy: first=0.0000, last=0.1137
+  JS div:  mean=0.072370, max=1.000000
   Cosine:  mean=0.957406, min=0.487837
+  Angular: mean=0.057182, max=0.337786
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.1861
-  KL div:  mean=0.654590, max=30.687008
+  Norm. entropy: first=0.0000, last=0.0156
+  JS div:  mean=0.037500, max=0.999898
   Cosine:  mean=0.977132, min=0.499789
+  Angular: mean=0.033589, max=0.333411
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.5566
-  KL div:  mean=0.578122, max=31.312481
+  Norm. entropy: first=0.0000, last=0.0467
+  JS div:  mean=0.032663, max=0.999997
   Cosine:  mean=0.975405, min=0.620838
+  Angular: mean=0.049653, max=0.286792
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 2985
-  Entropy: first=0.0000, last=0.0019
-  KL div:  mean=36.052269, max=70.153389
-  Cosine:  mean=0.423630, min=0.054749
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.998149, max=1.000000
+  Cosine:  mean=0.423253, min=0.054749
+  Angular: mean=0.358766, max=0.482564
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.241161, Cosine=0.896722
-  exec1→exec2: KL=0.065810, Cosine=0.960754
-  exec2→exec3: KL=14.254389, Cosine=0.254629
+  exec0->exec1 [latent->latent]: JS=0.999999, Cos=0.308218, Ang=0.400267
+  exec1->exec2 [latent->latent]: JS=1.000000, Cos=0.365178, Ang=0.381008
+  exec2->exec3 [latent->decode]: JS=0.999998, Cos=0.274177, Ang=0.411595
 
 [Response]
 <think>
@@ -2644,33 +2676,37 @@ The parabola with equation $y=x^{2}-4$ is rotated $60^{\circ}$ counterclockwise 
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.7548
-  KL div:  mean=0.640122, max=26.499987
+  Norm. entropy: first=0.0000, last=0.2309
+  JS div:  mean=0.084104, max=1.000000
   Cosine:  mean=0.946264, min=0.520503
+  Angular: mean=0.079991, max=0.325744
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.2718
-  KL div:  mean=0.704935, max=31.403477
+  Norm. entropy: first=0.0000, last=0.1066
+  JS div:  mean=0.064537, max=0.999494
   Cosine:  mean=0.977753, min=0.653008
+  Angular: mean=0.050197, max=0.273507
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.5056
-  KL div:  mean=0.614719, max=35.403580
+  Norm. entropy: first=0.0000, last=0.1262
+  JS div:  mean=0.037926, max=0.993707
   Cosine:  mean=0.982663, min=0.654855
+  Angular: mean=0.035279, max=0.272730
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 20000
-  Entropy: first=0.0000, last=0.0000
-  KL div:  mean=35.035204, max=60.338894
-  Cosine:  mean=0.525645, min=0.162074
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.995218, max=1.000000
+  Cosine:  mean=0.526464, min=0.162074
+  Angular: mean=0.320010, max=0.448182
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.772916, Cosine=0.920898
-  exec1→exec2: KL=0.072849, Cosine=0.974358
-  exec2→exec3: KL=14.351754, Cosine=0.467486
+  exec0->exec1 [latent->latent]: JS=0.999994, Cos=0.364846, Ang=0.381122
+  exec1->exec2 [latent->latent]: JS=0.999997, Cos=0.467995, Ang=0.344977
+  exec2->exec3 [latent->decode]: JS=0.999998, Cos=0.470403, Ang=0.344109
 
 [Response]
 <think>
@@ -4054,33 +4090,37 @@ The 27 cells of a $3\times9$ grid are filled in using the numbers 1 through 9 so
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.6019
-  KL div:  mean=0.753660, max=28.686977
+  Norm. entropy: first=0.0000, last=0.0505
+  JS div:  mean=0.102372, max=1.000000
   Cosine:  mean=0.945635, min=0.469326
+  Angular: mean=0.079436, max=0.344497
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.7799
-  KL div:  mean=0.519624, max=29.308163
+  Norm. entropy: first=0.0000, last=0.0654
+  JS div:  mean=0.032168, max=0.999205
   Cosine:  mean=0.977680, min=0.611190
+  Angular: mean=0.038550, max=0.290691
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.4923
-  KL div:  mean=0.645841, max=34.203003
+  Norm. entropy: first=0.0000, last=0.0413
+  JS div:  mean=0.052182, max=0.999977
   Cosine:  mean=0.970653, min=0.545856
+  Angular: mean=0.052772, max=0.316204
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 20000
-  Entropy: first=0.0000, last=0.0000
-  KL div:  mean=32.817597, max=64.896858
-  Cosine:  mean=0.443669, min=0.033501
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.994381, max=1.000000
+  Cosine:  mean=0.443402, min=0.033501
+  Angular: mean=0.350837, max=0.489334
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.076343, Cosine=0.988157
-  exec1→exec2: KL=0.045404, Cosine=0.984173
-  exec2→exec3: KL=16.344421, Cosine=0.590290
+  exec0->exec1 [latent->latent]: JS=0.999999, Cos=0.289850, Ang=0.406394
+  exec1->exec2 [latent->latent]: JS=1.000000, Cos=0.231498, Ang=0.425637
+  exec2->exec3 [latent->decode]: JS=0.999999, Cos=0.235863, Ang=0.424208
 
 [Response]
 <think>
@@ -10316,33 +10356,37 @@ A piecewise linear periodic function is defined by $f(x)=\begin{cases}x&\text{if
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0001, last=1.9840
-  KL div:  mean=0.355072, max=26.249825
+  Norm. entropy: first=0.0000, last=0.1663
+  JS div:  mean=0.019535, max=1.000000
   Cosine:  mean=0.975769, min=0.534366
+  Angular: mean=0.028900, max=0.320551
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.8270
-  KL div:  mean=0.439752, max=30.559782
+  Norm. entropy: first=0.0000, last=0.1531
+  JS div:  mean=0.027042, max=0.999494
   Cosine:  mean=0.982780, min=0.696572
+  Angular: mean=0.029933, max=0.254708
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.2404
-  KL div:  mean=0.556503, max=35.388283
+  Norm. entropy: first=0.0000, last=0.1878
+  JS div:  mean=0.033266, max=0.999998
   Cosine:  mean=0.980256, min=0.458111
+  Angular: mean=0.040287, max=0.348526
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 20000
-  Entropy: first=0.0000, last=0.0000
-  KL div:  mean=33.550493, max=58.828125
-  Cosine:  mean=0.417576, min=0.000922
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.989880, max=1.000000
+  Cosine:  mean=0.416972, min=0.000922
+  Angular: mean=0.360782, max=0.499706
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.198945, Cosine=0.967854
-  exec1→exec2: KL=0.059859, Cosine=0.988000
-  exec2→exec3: KL=9.799996, Cosine=0.764337
+  exec0->exec1 [latent->latent]: JS=1.000000, Cos=0.389546, Ang=0.372632
+  exec1->exec2 [latent->latent]: JS=1.000000, Cos=0.357030, Ang=0.383789
+  exec2->exec3 [latent->decode]: JS=1.000000, Cos=0.421510, Ang=0.361500
 
 [Response]
 <think>
@@ -14335,33 +14379,37 @@ The set of points in 3-dimensional coordinate space that lie in the plane $x+y+z
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.1158
-  KL div:  mean=0.652157, max=26.874971
+  Norm. entropy: first=0.0000, last=0.0935
+  JS div:  mean=0.081809, max=1.000000
   Cosine:  mean=0.953743, min=0.412977
+  Angular: mean=0.075506, max=0.364489
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.0723
-  KL div:  mean=0.468009, max=31.062420
+  Norm. entropy: first=0.0000, last=0.0899
+  JS div:  mean=0.031033, max=0.999982
   Cosine:  mean=0.978039, min=0.497096
+  Angular: mean=0.037369, max=0.334400
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.9133
-  KL div:  mean=0.393536, max=17.987492
+  Norm. entropy: first=0.0000, last=0.1604
+  JS div:  mean=0.038950, max=0.878361
   Cosine:  mean=0.978911, min=0.624128
+  Angular: mean=0.050242, max=0.285454
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 20000
-  Entropy: first=0.0000, last=0.0000
-  KL div:  mean=34.202307, max=54.562500
-  Cosine:  mean=0.492148, min=0.108061
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.996381, max=1.000000
+  Cosine:  mean=0.492207, min=0.108061
+  Angular: mean=0.332972, max=0.465536
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.214511, Cosine=0.975219
-  exec1→exec2: KL=0.309652, Cosine=0.985668
-  exec2→exec3: KL=9.771353, Cosine=0.602937
+  exec0->exec1 [latent->latent]: JS=0.999999, Cos=0.336452, Ang=0.390773
+  exec1->exec2 [latent->latent]: JS=0.999999, Cos=0.354576, Ang=0.384625
+  exec2->exec3 [latent->decode]: JS=0.999997, Cos=0.318113, Ang=0.396951
 
 [Response]
 <think>
@@ -19512,33 +19560,37 @@ Alex divides a disk into four quadrants with two perpendicular diameters interse
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.5399
-  KL div:  mean=0.630722, max=30.437464
+  Norm. entropy: first=0.0000, last=0.1291
+  JS div:  mean=0.073506, max=1.000000
   Cosine:  mean=0.965029, min=0.539031
+  Angular: mean=0.071354, max=0.318791
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=3.0998
-  KL div:  mean=0.726023, max=27.099810
+  Norm. entropy: first=0.0000, last=0.2598
+  JS div:  mean=0.099837, max=0.971679
   Cosine:  mean=0.960420, min=0.638333
+  Angular: mean=0.079926, max=0.279624
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.1020
-  KL div:  mean=0.818021, max=28.552279
+  Norm. entropy: first=0.0000, last=0.1762
+  JS div:  mean=0.084051, max=0.955922
   Cosine:  mean=0.968190, min=0.513784
+  Angular: mean=0.061485, max=0.328243
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 8226
-  Entropy: first=0.0000, last=0.0005
-  KL div:  mean=36.461946, max=66.585045
-  Cosine:  mean=0.517099, min=0.117869
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.989270, max=1.000000
+  Cosine:  mean=0.517851, min=0.117869
+  Angular: mean=0.322496, max=0.462394
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=3.001930, Cosine=0.911463
-  exec1→exec2: KL=2.095695, Cosine=0.943844
-  exec2→exec3: KL=12.341565, Cosine=0.255896
+  exec0->exec1 [latent->latent]: JS=0.999998, Cos=0.470788, Ang=0.343970
+  exec1->exec2 [latent->latent]: JS=0.999985, Cos=0.444963, Ang=0.353217
+  exec2->exec3 [latent->decode]: JS=0.999991, Cos=0.445351, Ang=0.353079
 
 [Response]
 <think>
@@ -20026,33 +20078,37 @@ Let $ABCDE$ be a convex pentagon with $AB=14, BC=7, CD=24, DE=13, EA=26,$ and $\
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0001, last=0.5367
-  KL div:  mean=0.575390, max=25.124989
+  Norm. entropy: first=0.0000, last=0.0450
+  JS div:  mean=0.064649, max=1.000000
   Cosine:  mean=0.968318, min=0.463927
+  Angular: mean=0.047602, max=0.346440
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.3878
-  KL div:  mean=1.171239, max=31.134327
+  Norm. entropy: first=0.0000, last=0.0325
+  JS div:  mean=0.113992, max=0.996610
   Cosine:  mean=0.955388, min=0.579051
+  Angular: mean=0.073722, max=0.303423
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.4212
-  KL div:  mean=0.548968, max=33.212166
+  Norm. entropy: first=0.0000, last=0.0353
+  JS div:  mean=0.045399, max=1.000000
   Cosine:  mean=0.965506, min=0.572694
+  Angular: mean=0.063204, max=0.305898
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 20000
-  Entropy: first=0.0000, last=0.0006
-  KL div:  mean=34.447289, max=58.927513
-  Cosine:  mean=0.478286, min=0.148599
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.996048, max=1.000000
+  Cosine:  mean=0.478367, min=0.148599
+  Angular: mean=0.338897, max=0.452524
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=2.954527, Cosine=0.950193
-  exec1→exec2: KL=0.032572, Cosine=0.944329
-  exec2→exec3: KL=21.674620, Cosine=0.560176
+  exec0->exec1 [latent->latent]: JS=1.000000, Cos=0.362159, Ang=0.382040
+  exec1->exec2 [latent->latent]: JS=0.999999, Cos=0.399790, Ang=0.369083
+  exec2->exec3 [latent->decode]: JS=1.000000, Cos=0.234289, Ang=0.424724
 
 [Response]
 <think>
@@ -26920,33 +26976,37 @@ Let $N$ denote the number of ordered triples of positive integers $(a,b,c)$ such
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0001, last=0.5418
-  KL div:  mean=0.639267, max=27.687361
+  Norm. entropy: first=0.0000, last=0.0454
+  JS div:  mean=0.065736, max=1.000000
   Cosine:  mean=0.971359, min=0.515263
+  Angular: mean=0.050937, max=0.327694
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.0791
-  KL div:  mean=0.613747, max=31.655678
+  Norm. entropy: first=0.0000, last=0.0905
+  JS div:  mean=0.060695, max=0.999885
   Cosine:  mean=0.969795, min=0.689270
+  Angular: mean=0.056848, max=0.257932
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.2468
-  KL div:  mean=0.873737, max=33.624958
+  Norm. entropy: first=0.0000, last=0.1045
+  JS div:  mean=0.056947, max=0.999992
   Cosine:  mean=0.974010, min=0.600731
+  Angular: mean=0.050746, max=0.294876
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 9090
-  Entropy: first=0.0000, last=0.0000
-  KL div:  mean=38.945507, max=58.881149
-  Cosine:  mean=0.509705, min=0.188188
+  Norm. entropy: first=0.0000, last=0.0001
+  JS div:  mean=0.974601, max=1.000000
+  Cosine:  mean=0.510124, min=0.188188
+  Angular: mean=0.327199, max=0.439739
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.153888, Cosine=0.984646
-  exec1→exec2: KL=0.043662, Cosine=0.992204
-  exec2→exec3: KL=9.858928, Cosine=0.348577
+  exec0->exec1 [latent->latent]: JS=0.999999, Cos=0.383264, Ang=0.374800
+  exec1->exec2 [latent->latent]: JS=0.999998, Cos=0.442059, Ang=0.354248
+  exec2->exec3 [latent->decode]: JS=0.999996, Cos=0.416492, Ang=0.363259
 
 [Response]
 <think>
@@ -27356,33 +27416,37 @@ Six points $A, B, C, D, E$ and $F$ lie in a straight line in that order. Suppose
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.1680
-  KL div:  mean=0.457584, max=27.999769
+  Norm. entropy: first=0.0000, last=0.1817
+  JS div:  mean=0.035493, max=1.000000
   Cosine:  mean=0.958835, min=0.499450
+  Angular: mean=0.048222, max=0.333535
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.9144
-  KL div:  mean=0.644630, max=29.283871
+  Norm. entropy: first=0.0000, last=0.2443
+  JS div:  mean=0.048312, max=0.897988
   Cosine:  mean=0.978974, min=0.566046
+  Angular: mean=0.028051, max=0.308472
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.0883
-  KL div:  mean=0.739865, max=13.286522
+  Norm. entropy: first=0.0000, last=0.0912
+  JS div:  mean=0.071730, max=0.999975
   Cosine:  mean=0.969130, min=0.525689
+  Angular: mean=0.039557, max=0.323808
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 1523
-  Entropy: first=0.0000, last=0.0000
-  KL div:  mean=32.881792, max=59.468750
-  Cosine:  mean=0.496537, min=0.112670
+  Norm. entropy: first=0.0000, last=0.0393
+  JS div:  mean=0.999720, max=1.000000
+  Cosine:  mean=0.496678, min=0.112670
+  Angular: mean=0.331893, max=0.464060
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.805897, Cosine=0.988399
-  exec1→exec2: KL=0.586650, Cosine=0.983947
-  exec2→exec3: KL=27.532133, Cosine=0.296763
+  exec0->exec1 [latent->latent]: JS=1.000000, Cos=0.093280, Ang=0.470265
+  exec1->exec2 [latent->latent]: JS=1.000000, Cos=0.146884, Ang=0.453076
+  exec2->exec3 [latent->decode]: JS=1.000000, Cos=0.143242, Ang=0.454247
 
 [Response]
 <think>
@@ -27485,33 +27549,37 @@ Find the sum of all positive integers $n$ such that $n+2$ divides the product $3
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.7117
-  KL div:  mean=0.741390, max=27.937357
+  Norm. entropy: first=0.0000, last=0.2273
+  JS div:  mean=0.116431, max=1.000000
   Cosine:  mean=0.952569, min=0.526514
+  Angular: mean=0.080847, max=0.323499
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.1614
-  KL div:  mean=1.038176, max=31.213005
+  Norm. entropy: first=0.0000, last=0.1812
+  JS div:  mean=0.166373, max=0.999004
   Cosine:  mean=0.950100, min=0.721284
+  Angular: mean=0.089634, max=0.243552
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.6177
-  KL div:  mean=0.872433, max=34.624996
+  Norm. entropy: first=0.0000, last=0.1356
+  JS div:  mean=0.078262, max=0.999999
   Cosine:  mean=0.972144, min=0.608504
+  Angular: mean=0.057021, max=0.291770
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 2097
-  Entropy: first=0.0000, last=0.0066
-  KL div:  mean=38.964365, max=65.962845
-  Cosine:  mean=0.527751, min=0.145377
+  Norm. entropy: first=0.0000, last=0.0329
+  JS div:  mean=0.999987, max=1.000000
+  Cosine:  mean=0.528591, min=0.145377
+  Angular: mean=0.319705, max=0.453561
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=1.908293, Cosine=0.935954
-  exec1→exec2: KL=0.223812, Cosine=0.966689
-  exec2→exec3: KL=18.826302, Cosine=0.256651
+  exec0->exec1 [latent->latent]: JS=0.999970, Cos=0.463590, Ang=0.346561
+  exec1->exec2 [latent->latent]: JS=0.999987, Cos=0.466946, Ang=0.345354
+  exec2->exec3 [latent->decode]: JS=0.999995, Cos=0.495904, Ang=0.334837
 
 [Response]
 <think>
@@ -27605,33 +27673,37 @@ Four unit squares form a $2\times 2$ grid. Each of the $12$ unit line segments f
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.4099
-  KL div:  mean=0.723138, max=30.937063
+  Norm. entropy: first=0.0000, last=0.0344
+  JS div:  mean=0.054011, max=1.000000
   Cosine:  mean=0.949520, min=0.443839
+  Angular: mean=0.068683, max=0.353616
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.3134
-  KL div:  mean=0.410014, max=20.383081
+  Norm. entropy: first=0.0000, last=0.0263
+  JS div:  mean=0.034611, max=0.951518
   Cosine:  mean=0.979687, min=0.675053
+  Angular: mean=0.043001, max=0.264121
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.3902
-  KL div:  mean=0.575286, max=36.216206
+  Norm. entropy: first=0.0000, last=0.0327
+  JS div:  mean=0.024192, max=0.973846
   Cosine:  mean=0.982047, min=0.502203
+  Angular: mean=0.033683, max=0.332523
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 11064
-  Entropy: first=0.0000, last=0.0000
-  KL div:  mean=35.364568, max=62.411358
-  Cosine:  mean=0.513988, min=0.149540
+  Norm. entropy: first=0.0000, last=0.0024
+  JS div:  mean=0.990818, max=1.000000
+  Cosine:  mean=0.514197, min=0.149540
+  Angular: mean=0.325406, max=0.452221
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.034659, Cosine=0.978629
-  exec1→exec2: KL=0.004343, Cosine=0.992575
-  exec2→exec3: KL=15.607326, Cosine=0.310795
+  exec0->exec1 [latent->latent]: JS=0.999999, Cos=0.444086, Ang=0.353529
+  exec1->exec2 [latent->latent]: JS=0.999997, Cos=0.486679, Ang=0.338208
+  exec2->exec3 [latent->decode]: JS=0.999998, Cos=0.422851, Ang=0.361029
 
 [Response]
 <think>
@@ -28443,33 +28515,37 @@ is equal to $\frac{m}{n}$, where $m$ and $n$ are relatively prime positive integ
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.8889
-  KL div:  mean=0.558587, max=27.499226
+  Norm. entropy: first=0.0000, last=0.0745
+  JS div:  mean=0.056875, max=1.000000
   Cosine:  mean=0.947363, min=0.438960
+  Angular: mean=0.076782, max=0.355347
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.9944
-  KL div:  mean=0.532113, max=31.124283
+  Norm. entropy: first=0.0000, last=0.0834
+  JS div:  mean=0.036793, max=0.999856
   Cosine:  mean=0.979930, min=0.662354
+  Angular: mean=0.045410, max=0.269557
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0001, last=0.6026
-  KL div:  mean=0.621765, max=31.937868
+  Norm. entropy: first=0.0000, last=0.0505
+  JS div:  mean=0.028503, max=0.999490
   Cosine:  mean=0.967932, min=0.594215
+  Angular: mean=0.058948, max=0.297463
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 4416
-  Entropy: first=0.0000, last=0.0047
-  KL div:  mean=36.037840, max=54.812378
-  Cosine:  mean=0.437709, min=0.089169
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.980227, max=1.000000
+  Cosine:  mean=0.436988, min=0.089169
+  Angular: mean=0.353731, max=0.471579
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.046935, Cosine=0.983242
-  exec1→exec2: KL=0.160859, Cosine=0.946920
-  exec2→exec3: KL=20.186190, Cosine=0.440244
+  exec0->exec1 [latent->latent]: JS=0.999997, Cos=0.429791, Ang=0.358587
+  exec1->exec2 [latent->latent]: JS=0.999984, Cos=0.463842, Ang=0.346471
+  exec2->exec3 [latent->decode]: JS=0.999984, Cos=0.471926, Ang=0.343559
 
 [Response]
 <think>
@@ -28843,33 +28919,37 @@ Suppose $\triangle ABC$ has angles $\angle BAC = 84^\circ$, $\angle ABC = 60^\ci
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.1867
-  KL div:  mean=0.440376, max=26.743122
+  Norm. entropy: first=0.0000, last=0.1833
+  JS div:  mean=0.032422, max=1.000000
   Cosine:  mean=0.971601, min=0.473672
+  Angular: mean=0.032428, max=0.342928
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.0511
-  KL div:  mean=0.501632, max=31.999977
+  Norm. entropy: first=0.0000, last=0.1719
+  JS div:  mean=0.022961, max=0.999994
   Cosine:  mean=0.989874, min=0.644603
+  Angular: mean=0.019242, max=0.277023
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.1214
-  KL div:  mean=0.462460, max=31.300594
+  Norm. entropy: first=0.0000, last=0.1778
+  JS div:  mean=0.023736, max=0.999640
   Cosine:  mean=0.981852, min=0.433515
+  Angular: mean=0.026555, max=0.357273
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 20000
-  Entropy: first=0.0000, last=0.5343
-  KL div:  mean=24.400804, max=50.662151
-  Cosine:  mean=0.593564, min=0.144223
+  Norm. entropy: first=0.0000, last=0.0598
+  JS div:  mean=0.986628, max=1.000000
+  Cosine:  mean=0.594223, min=0.144223
+  Angular: mean=0.287586, max=0.453932
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.452173, Cosine=0.962759
-  exec1→exec2: KL=0.127080, Cosine=0.985364
-  exec2→exec3: KL=20.103943, Cosine=0.747492
+  exec0->exec1 [latent->latent]: JS=1.000000, Cos=0.420136, Ang=0.361982
+  exec1->exec2 [latent->latent]: JS=1.000000, Cos=0.344955, Ang=0.387894
+  exec2->exec3 [latent->decode]: JS=0.999999, Cos=0.385875, Ang=0.373900
 
 [Response]
 <think>
@@ -29133,33 +29213,37 @@ Circle $\omega_1$ with radius $6$ centered at point $A$ is internally tangent at
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.5987
-  KL div:  mean=0.713004, max=32.255619
+  Norm. entropy: first=0.0000, last=0.1340
+  JS div:  mean=0.101449, max=1.000000
   Cosine:  mean=0.951629, min=0.567764
+  Angular: mean=0.081681, max=0.307809
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.2102
-  KL div:  mean=0.781333, max=30.642630
+  Norm. entropy: first=0.0000, last=0.1014
+  JS div:  mean=0.063476, max=0.999995
   Cosine:  mean=0.973267, min=0.613161
+  Angular: mean=0.050084, max=0.289898
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.1417
-  KL div:  mean=0.638036, max=35.050926
+  Norm. entropy: first=0.0000, last=0.0957
+  JS div:  mean=0.034411, max=0.998257
   Cosine:  mean=0.982243, min=0.677955
+  Angular: mean=0.036241, max=0.262867
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 10964
-  Entropy: first=0.0000, last=0.0008
-  KL div:  mean=29.674832, max=62.406250
-  Cosine:  mean=0.424031, min=0.078127
+  Norm. entropy: first=0.0000, last=0.0009
+  JS div:  mean=0.990628, max=1.000000
+  Cosine:  mean=0.422845, min=0.078127
+  Angular: mean=0.358257, max=0.475106
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.124960, Cosine=0.983193
-  exec1→exec2: KL=0.282363, Cosine=0.957783
-  exec2→exec3: KL=19.325069, Cosine=0.326087
+  exec0->exec1 [latent->latent]: JS=0.999997, Cos=0.394163, Ang=0.371035
+  exec1->exec2 [latent->latent]: JS=0.999995, Cos=0.423919, Ang=0.360654
+  exec2->exec3 [latent->decode]: JS=0.999996, Cos=0.397342, Ang=0.369933
 
 [Response]
 <think>
@@ -30027,33 +30111,37 @@ Let $A$ be the set of positive integer divisors of $2025$. Let $B$ be a randomly
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.7215
-  KL div:  mean=0.500344, max=28.124756
+  Norm. entropy: first=0.0000, last=0.0605
+  JS div:  mean=0.034647, max=1.000000
   Cosine:  mean=0.950679, min=0.401561
+  Angular: mean=0.067820, max=0.368468
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.5170
-  KL div:  mean=0.548849, max=29.733425
+  Norm. entropy: first=0.0000, last=0.0433
+  JS div:  mean=0.034870, max=0.997282
   Cosine:  mean=0.981934, min=0.697195
+  Angular: mean=0.040074, max=0.254431
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.7648
-  KL div:  mean=0.654280, max=30.405787
+  Norm. entropy: first=0.0000, last=0.0641
+  JS div:  mean=0.028201, max=0.964343
   Cosine:  mean=0.974170, min=0.556243
+  Angular: mean=0.052111, max=0.312242
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 20000
-  Entropy: first=0.0000, last=0.0000
-  KL div:  mean=35.909760, max=64.648651
-  Cosine:  mean=0.484540, min=0.160520
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.995045, max=1.000000
+  Cosine:  mean=0.484719, min=0.160520
+  Angular: mean=0.335843, max=0.448683
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.020958, Cosine=0.982296
-  exec1→exec2: KL=0.043243, Cosine=0.973806
-  exec2→exec3: KL=22.750759, Cosine=0.698122
+  exec0->exec1 [latent->latent]: JS=0.999997, Cos=0.458695, Ang=0.348317
+  exec1->exec2 [latent->latent]: JS=0.999995, Cos=0.470199, Ang=0.344182
+  exec2->exec3 [latent->decode]: JS=0.999988, Cos=0.440783, Ang=0.354701
 
 [Response]
 <think>
@@ -30364,33 +30452,37 @@ In general, the greedy algorithm \emph{succeeds} for a given $N$ if no other col
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.5965
-  KL div:  mean=0.651460, max=29.249681
+  Norm. entropy: first=0.0000, last=0.2177
+  JS div:  mean=0.056969, max=1.000000
   Cosine:  mean=0.969942, min=0.549011
+  Angular: mean=0.056539, max=0.315005
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.8653
-  KL div:  mean=0.861587, max=31.333147
+  Norm. entropy: first=0.0000, last=0.0725
+  JS div:  mean=0.071645, max=0.998257
   Cosine:  mean=0.971879, min=0.489242
+  Angular: mean=0.055500, max=0.337274
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.3606
-  KL div:  mean=0.641440, max=35.749241
+  Norm. entropy: first=0.0000, last=0.1141
+  JS div:  mean=0.051857, max=0.999871
   Cosine:  mean=0.959447, min=0.611236
+  Angular: mean=0.073783, max=0.290673
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 166
-  Entropy: first=0.0000, last=0.6300
-  KL div:  mean=18.372642, max=49.942123
-  Cosine:  mean=0.735140, min=-0.145275
+  Norm. entropy: first=0.0000, last=0.0003
+  JS div:  mean=0.939704, max=1.000000
+  Cosine:  mean=0.737762, min=-0.145275
+  Angular: mean=0.219886, max=0.546407
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=1.279572, Cosine=0.898450
-  exec1→exec2: KL=0.262201, Cosine=0.971390
-  exec2→exec3: KL=12.521555, Cosine=0.404142
+  exec0->exec1 [latent->latent]: JS=0.999993, Cos=0.431743, Ang=0.357899
+  exec1->exec2 [latent->latent]: JS=0.999996, Cos=0.459092, Ang=0.348175
+  exec2->exec3 [latent->decode]: JS=0.999990, Cos=0.427447, Ang=0.359413
 
 [Response]
 <think>
@@ -30423,33 +30515,37 @@ There are $n$ values of $x$ in the interval $0 < x < 2\pi$ where $f(x) = \sin\le
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.6969
-  KL div:  mean=1.166662, max=29.968712
+  Norm. entropy: first=0.0000, last=0.0584
+  JS div:  mean=0.101095, max=1.000000
   Cosine:  mean=0.904365, min=0.190599
+  Angular: mean=0.100065, max=0.438957
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.7543
-  KL div:  mean=0.571442, max=30.776220
+  Norm. entropy: first=0.0000, last=0.0632
+  JS div:  mean=0.038974, max=0.999110
   Cosine:  mean=0.963605, min=0.654622
+  Angular: mean=0.063772, max=0.272828
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.9437
-  KL div:  mean=0.601547, max=31.353334
+  Norm. entropy: first=0.0000, last=0.0791
+  JS div:  mean=0.058084, max=0.916188
   Cosine:  mean=0.953883, min=0.571593
+  Angular: mean=0.071838, max=0.306326
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 3129
-  Entropy: first=0.6176, last=0.5176
-  KL div:  mean=32.193795, max=58.292938
-  Cosine:  mean=0.427216, min=-0.079424
+  Norm. entropy: first=0.0518, last=0.0000
+  JS div:  mean=0.988481, max=1.000000
+  Cosine:  mean=0.424894, min=-0.079424
+  Angular: mean=0.357789, max=0.525308
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.032868, Cosine=0.951321
-  exec1→exec2: KL=0.043877, Cosine=0.962111
-  exec2→exec3: KL=18.072964, Cosine=0.411018
+  exec0->exec1 [latent->latent]: JS=0.999998, Cos=0.426944, Ang=0.359590
+  exec1->exec2 [latent->latent]: JS=0.999990, Cos=0.454599, Ang=0.349782
+  exec2->exec3 [latent->decode]: JS=0.999179, Cos=0.442728, Ang=0.354011
 
 [Response]
 <think>
@@ -30569,33 +30665,37 @@ Sixteen chairs are arranged in a row. Eight people each select a chair in which 
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.9856
-  KL div:  mean=0.720602, max=29.531231
+  Norm. entropy: first=0.0000, last=0.0826
+  JS div:  mean=0.070008, max=1.000000
   Cosine:  mean=0.942961, min=0.532860
+  Angular: mean=0.091149, max=0.321117
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.0594
-  KL div:  mean=0.714527, max=31.090233
+  Norm. entropy: first=0.0000, last=0.0888
+  JS div:  mean=0.094823, max=0.999365
   Cosine:  mean=0.945576, min=0.708493
+  Angular: mean=0.093914, max=0.249375
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.8986
-  KL div:  mean=0.447204, max=5.881986
+  Norm. entropy: first=0.0000, last=0.1591
+  JS div:  mean=0.114243, max=0.979748
   Cosine:  mean=0.947014, min=0.675970
+  Angular: mean=0.092819, max=0.263725
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 11956
-  Entropy: first=0.0000, last=0.0015
-  KL div:  mean=31.945560, max=54.361340
-  Cosine:  mean=0.526493, min=0.218832
+  Norm. entropy: first=0.0000, last=0.0012
+  JS div:  mean=0.983064, max=1.000000
+  Cosine:  mean=0.526102, min=0.218832
+  Angular: mean=0.320187, max=0.429775
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.102368, Cosine=0.962834
-  exec1→exec2: KL=2.305084, Cosine=0.916392
-  exec2→exec3: KL=15.644838, Cosine=0.424953
+  exec0->exec1 [latent->latent]: JS=0.999998, Cos=0.427660, Ang=0.359338
+  exec1->exec2 [latent->latent]: JS=0.999996, Cos=0.471140, Ang=0.343843
+  exec2->exec3 [latent->decode]: JS=0.999973, Cos=0.452418, Ang=0.350562
 
 [Response]
 <think>
@@ -31403,33 +31503,37 @@ Let $S$ be the set of vertices of a regular $24$-gon. Find the number of ways to
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.3949
-  KL div:  mean=0.555425, max=29.530813
+  Norm. entropy: first=0.0000, last=0.0331
+  JS div:  mean=0.063129, max=1.000000
   Cosine:  mean=0.940623, min=0.459460
+  Angular: mean=0.073727, max=0.348043
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.4399
-  KL div:  mean=0.634443, max=29.563515
+  Norm. entropy: first=0.0000, last=0.0369
+  JS div:  mean=0.048797, max=0.903921
   Cosine:  mean=0.970123, min=0.661712
+  Angular: mean=0.053101, max=0.269830
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.3971
-  KL div:  mean=0.173518, max=6.798775
+  Norm. entropy: first=0.0000, last=0.0333
+  JS div:  mean=0.027772, max=0.985437
   Cosine:  mean=0.972324, min=0.525551
+  Angular: mean=0.046650, max=0.323859
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 10829
-  Entropy: first=0.0000, last=0.0073
-  KL div:  mean=36.181867, max=57.875000
-  Cosine:  mean=0.505784, min=0.147399
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.997439, max=1.000000
+  Cosine:  mean=0.504730, min=0.147399
+  Angular: mean=0.329059, max=0.452910
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.039706, Cosine=0.969304
-  exec1→exec2: KL=0.072553, Cosine=0.943360
-  exec2→exec3: KL=20.078857, Cosine=0.432136
+  exec0->exec1 [latent->latent]: JS=0.999999, Cos=0.366596, Ang=0.380523
+  exec1->exec2 [latent->latent]: JS=0.999998, Cos=0.438386, Ang=0.355550
+  exec2->exec3 [latent->decode]: JS=0.999952, Cos=0.536231, Ang=0.319847
 
 [Response]
 <think>
@@ -32132,33 +32236,37 @@ Then $A_1 A_2 + A_1 A_{11} = \frac{m \sqrt{n} - p}{q}$ where $m, n, p$, and $q$ 
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.2456
-  KL div:  mean=0.482974, max=27.623953
+  Norm. entropy: first=0.0000, last=0.1882
+  JS div:  mean=0.053114, max=1.000000
   Cosine:  mean=0.970812, min=0.561822
+  Angular: mean=0.055294, max=0.310101
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.7793
-  KL div:  mean=0.719425, max=30.873316
+  Norm. entropy: first=0.0000, last=0.2330
+  JS div:  mean=0.061283, max=0.999679
   Cosine:  mean=0.963933, min=0.669291
+  Angular: mean=0.074810, max=0.266598
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.7487
-  KL div:  mean=0.898017, max=36.212971
+  Norm. entropy: first=0.0000, last=0.2304
+  JS div:  mean=0.101958, max=0.999997
   Cosine:  mean=0.953329, min=0.596007
+  Angular: mean=0.088367, max=0.296753
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 20000
-  Entropy: first=0.0000, last=0.0000
-  KL div:  mean=28.329301, max=50.937496
-  Cosine:  mean=0.481249, min=0.085074
+  Norm. entropy: first=0.0000, last=0.0420
+  JS div:  mean=0.981325, max=1.000000
+  Cosine:  mean=0.481299, min=0.085074
+  Angular: mean=0.337479, max=0.472887
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.847336, Cosine=0.962184
-  exec1→exec2: KL=0.083392, Cosine=0.985371
-  exec2→exec3: KL=17.433420, Cosine=0.470612
+  exec0->exec1 [latent->latent]: JS=0.999999, Cos=0.403387, Ang=0.367833
+  exec1->exec2 [latent->latent]: JS=0.999995, Cos=0.413177, Ang=0.364419
+  exec2->exec3 [latent->decode]: JS=0.999988, Cos=0.419473, Ang=0.362215
 
 [Response]
 <think>
@@ -37165,33 +37273,37 @@ for all $k \ge 1$. Then $x_{2025}$ can be expressed as $\frac{m}{n}$, where $m$ 
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0001, last=2.6020
-  KL div:  mean=0.579709, max=26.312500
+  Norm. entropy: first=0.0000, last=0.2181
+  JS div:  mean=0.048091, max=1.000000
   Cosine:  mean=0.966508, min=0.469140
+  Angular: mean=0.042559, max=0.344564
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=3.1485
-  KL div:  mean=0.456737, max=30.718998
+  Norm. entropy: first=0.0000, last=0.2639
+  JS div:  mean=0.030806, max=0.987508
   Cosine:  mean=0.984458, min=0.653751
+  Angular: mean=0.026120, max=0.273194
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.5277
-  KL div:  mean=0.299253, max=9.788154
+  Norm. entropy: first=0.0000, last=0.2119
+  JS div:  mean=0.029303, max=0.878224
   Cosine:  mean=0.981534, min=0.503687
+  Angular: mean=0.025897, max=0.331977
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 20000
-  Entropy: first=0.0000, last=0.0000
-  KL div:  mean=34.160599, max=66.125000
-  Cosine:  mean=0.489473, min=0.195487
+  Norm. entropy: first=0.0000, last=0.0000
+  JS div:  mean=0.974938, max=1.000000
+  Cosine:  mean=0.489355, min=0.195487
+  Angular: mean=0.335263, max=0.437371
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.573559, Cosine=0.977676
-  exec1→exec2: KL=0.470820, Cosine=0.985674
-  exec2→exec3: KL=15.137733, Cosine=0.545191
+  exec0->exec1 [latent->latent]: JS=1.000000, Cos=0.183028, Ang=0.441410
+  exec1->exec2 [latent->latent]: JS=1.000000, Cos=0.198460, Ang=0.436406
+  exec2->exec3 [latent->decode]: JS=1.000000, Cos=0.092793, Ang=0.470420
 
 [Response]
 <think>
@@ -38309,33 +38421,37 @@ The area of the quadrilateral $BKLC$ can be expressed as $n\sqrt{3}$ for some po
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.4353
-  KL div:  mean=0.460181, max=26.374996
+  Norm. entropy: first=0.0000, last=0.0365
+  JS div:  mean=0.042781, max=1.000000
   Cosine:  mean=0.947306, min=0.414329
+  Angular: mean=0.063232, max=0.364016
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.4864
-  KL div:  mean=0.604831, max=29.937462
+  Norm. entropy: first=0.0000, last=0.0408
+  JS div:  mean=0.047748, max=0.999991
   Cosine:  mean=0.973303, min=0.622633
+  Angular: mean=0.056316, max=0.286063
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=1.5512
-  KL div:  mean=0.708210, max=33.328068
+  Norm. entropy: first=0.0000, last=0.1300
+  JS div:  mean=0.043384, max=0.999987
   Cosine:  mean=0.974478, min=0.593732
+  Angular: mean=0.056405, max=0.297654
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 20000
-  Entropy: first=0.0002, last=0.0788
-  KL div:  mean=29.995917, max=74.500000
-  Cosine:  mean=0.481009, min=0.137912
+  Norm. entropy: first=0.0000, last=0.0012
+  JS div:  mean=0.992728, max=1.000000
+  Cosine:  mean=0.480951, min=0.137912
+  Angular: mean=0.336286, max=0.455961
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=0.123562, Cosine=0.930371
-  exec1→exec2: KL=0.147032, Cosine=0.986165
-  exec2→exec3: KL=13.549812, Cosine=0.541272
+  exec0->exec1 [latent->latent]: JS=0.999998, Cos=0.448661, Ang=0.351901
+  exec1->exec2 [latent->latent]: JS=0.999992, Cos=0.457906, Ang=0.348600
+  exec2->exec3 [latent->decode]: JS=0.999940, Cos=0.418463, Ang=0.362569
 
 [Response]
 <think>
@@ -49649,33 +49765,37 @@ defined over the positive real numbers achieves its minimum value at exactly two
 
   --- Agent: Planner (planner, type=latent, exec_idx=0) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=2.2586
-  KL div:  mean=0.529069, max=29.156225
+  Norm. entropy: first=0.0000, last=0.1893
+  JS div:  mean=0.045393, max=1.000000
   Cosine:  mean=0.956942, min=0.492349
+  Angular: mean=0.053325, max=0.336138
 
   --- Agent: Critic (critic, type=latent, exec_idx=1) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.3443
-  KL div:  mean=0.493461, max=31.156122
+  Norm. entropy: first=0.0000, last=0.0289
+  JS div:  mean=0.026153, max=0.999971
   Cosine:  mean=0.976454, min=0.651700
+  Angular: mean=0.049732, max=0.274056
 
   --- Agent: Refiner (refiner, type=latent, exec_idx=2) ---
   Steps recorded: 80
-  Entropy: first=0.0000, last=0.5946
-  KL div:  mean=0.772469, max=33.889969
+  Norm. entropy: first=0.0000, last=0.0498
+  JS div:  mean=0.042998, max=0.997567
   Cosine:  mean=0.973633, min=0.643248
+  Angular: mean=0.051193, max=0.277586
 
   --- Agent: Judger (judger, type=decode, exec_idx=3) ---
   Steps recorded: 80
   Decoded tokens: 14665
-  Entropy: first=0.0000, last=0.3606
-  KL div:  mean=34.002024, max=63.343750
-  Cosine:  mean=0.506362, min=0.038092
+  Norm. entropy: first=0.0000, last=0.0098
+  JS div:  mean=0.999314, max=1.000000
+  Cosine:  mean=0.506484, min=0.038092
+  Angular: mean=0.326567, max=0.487872
 
   --- Inter-Agent Boundary Metrics ---
-  exec0→exec1: KL=4.611309, Cosine=0.715370
-  exec1→exec2: KL=0.039472, Cosine=0.981022
-  exec2→exec3: KL=15.807129, Cosine=0.297923
+  exec0->exec1 [latent->latent]: JS=1.000000, Cos=0.149346, Ang=0.452283
+  exec1->exec2 [latent->latent]: JS=1.000000, Cos=0.350631, Ang=0.385967
+  exec2->exec3 [latent->decode]: JS=1.000000, Cos=0.328486, Ang=0.393461
 
 [Response]
 <think>
