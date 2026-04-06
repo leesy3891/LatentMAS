@@ -34,7 +34,7 @@ Changes from v3
 
 5. **Perplexity-based error propagation analysis**:
    - Perplexity = exp(entropy) computed at every analysis step.
-   - LatentMAS: per latent step; TextMAS: up to 80 sampled steps per agent.
+   - LatentMAS: per latent step; TextMAS: up to n_metric_steps sampled steps per agent.
    - Aggregated plots with interpretation rule.
 
 6. **Top-token analysis**: Fixed top-5 with Jaccard overlap (replaces Gaussian
@@ -1060,8 +1060,8 @@ def main():
                     if boundary["transition"] is not None:
                         boundary_rows.append(boundary)
 
-                    # Perplexity: sample 80 points from decode agent
-                    sampled_ppl = _sample_perplexity_steps(ppl_values, max_points=80)
+                    # Perplexity: sample up to n_metric_steps points from decode agent
+                    sampled_ppl = _sample_perplexity_steps(ppl_values, max_points=args.n_metric_steps)
                     perplexity_rows.append({
                         "case_idx":          case_idx,
                         "exec_idx":          exec_idx,
@@ -1156,8 +1156,8 @@ def main():
                 prev_agent_role = agent.role
                 prev_agent_type = "decode"
 
-                # Perplexity: sample 80 points from each agent's decode
-                sampled_ppl = _sample_perplexity_steps(ppl_values, max_points=80)
+                # Perplexity: sample up to n_metric_steps points from each agent's decode
+                sampled_ppl = _sample_perplexity_steps(ppl_values, max_points=args.n_metric_steps)
                 perplexity_rows.append({
                     "case_idx":          case_idx,
                     "exec_idx":          exec_idx,
@@ -1220,7 +1220,7 @@ def main():
             agent_records.append(ag_info)
             # Baseline: no boundary metrics — single agent, explicit skip
 
-            sampled_ppl = _sample_perplexity_steps(ppl_values, max_points=80)
+            sampled_ppl = _sample_perplexity_steps(ppl_values, max_points=args.n_metric_steps)
             perplexity_rows.append({
                 "case_idx":          case_idx,
                 "exec_idx":          0,
