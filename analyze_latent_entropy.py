@@ -96,13 +96,17 @@ from scripts import (
     # Plotting
     plot_per_agent_metric, plot_concatenated_overview,
     plot_boundary_metrics, plot_perplexity, run_all_plots,
-    # TXT logging
+    # TXT logging (no-ops, case_study.txt disabled)
     write_txt_case, write_txt_summary,
     # JSON logging
     build_step_semantics, save_json_results,
-    # Top-token probability analysis (deferred batch, fixed top-5)
+    # Top-token probability analysis (TXT only, JSON removed)
     batch_project_hidden_states,
     TOP_K,
+    # New analyses (v5)
+    run_entropy_js_analysis,
+    run_logit_lens_overlap,
+    run_pca_hidden_vs_embedding,
 )
 
 # ── prompt builders (latent_mas & text_mas use different ones) ──────────
@@ -224,6 +228,7 @@ def compute_distribution_metrics(
         "probs":              probs.detach(),
         "normalized_entropy": norm_entropy,
         "raw_entropy":        raw_entropy,
+        "entropy_logV":       log_V,
         "js_divergence":      js_div,
         "perplexity":         perplexity,
     }
@@ -338,11 +343,13 @@ def run_latent_agent_with_metrics(
 
     # ── Metric accumulators ──
     norm_entropies: List[Optional[float]] = []
+    raw_entropies: List[Optional[float]] = []
     js_divs: List[Optional[float]] = []
     cosines: List[Optional[float]] = []
     angular_dists: List[Optional[float]] = []
     perplexities: List[float] = []
     all_hiddens: List[torch.Tensor] = []
+    entropy_logV_val: Optional[float] = None  # constant per model
 
     # ── Step-0: after processing the agent's prompt tokens ──
     logits_0 = lm_head(last_hidden.to(lm_head.weight.dtype))
@@ -350,6 +357,8 @@ def run_latent_agent_with_metrics(
                                           vocab_size=vocab_size)
 
     norm_entropies.append(dist_0["normalized_entropy"])
+    raw_entropies.append(dist_0["raw_entropy"])
+    entropy_logV_val = dist_0["entropy_logV"]
     js_divs.append(None)           # no previous step
     cosines.append(None)           # no previous hidden
     angular_dists.append(None)     # no previous hidden
@@ -392,6 +401,7 @@ def run_latent_agent_with_metrics(
         drift_s = compute_hidden_drift_metrics(last_hidden, prev_hidden)
 
         norm_entropies.append(dist_s["normalized_entropy"])
+        raw_entropies.append(dist_s["raw_entropy"])
         js_divs.append(dist_s["js_divergence"])
         cosines.append(drift_s["cosine_similarity"])
         angular_dists.append(drift_s["angular_distance"])
@@ -405,6 +415,8 @@ def run_latent_agent_with_metrics(
     # Build the metrics dict using the latent_step schema
     metrics = {
         "normalized_entropy":  norm_entropies,
+        "raw_entropy":         raw_entropies,
+        "entropy_logV":        entropy_logV_val,
         "js_divergence":       js_divs,
         "cosine_similarity":   cosines,
         "angular_distance":    angular_dists,
@@ -501,6 +513,7 @@ def run_decode_agent_with_metrics(
     # ── Metric accumulators ──
     # Decision-time metrics (Stage A)
     dt_norm_entropies: List[Optional[float]] = []
+    dt_raw_entropies: List[Optional[float]] = []
     dt_js_divs: List[Optional[float]] = []
     # Post-update metrics (Stage B)
     pu_js_divs: List[Optional[float]] = []
@@ -508,6 +521,7 @@ def run_decode_agent_with_metrics(
     pu_angular_dists: List[Optional[float]] = []
     # Perplexity (from decision-time)
     all_perplexities: List[float] = []
+    entropy_logV_val: Optional[float] = None
 
     # ── Step-0 (prefill): decision-time snapshot ──
     logits_0 = lm_head(last_hidden.to(lm_head.weight.dtype))
@@ -515,6 +529,8 @@ def run_decode_agent_with_metrics(
                                           vocab_size=vocab_size)
 
     dt_norm_entropies.append(dist_0["normalized_entropy"])
+    dt_raw_entropies.append(dist_0["raw_entropy"])
+    entropy_logV_val = dist_0["entropy_logV"]
     dt_js_divs.append(None)        # no previous decision
     pu_js_divs.append(None)        # no post-update at step-0
     pu_cosines.append(None)
@@ -567,6 +583,7 @@ def run_decode_agent_with_metrics(
                 vocab_size=vocab_size,
             )
             dt_norm_entropies.append(dist_dt["normalized_entropy"])
+            dt_raw_entropies.append(dist_dt["raw_entropy"])
             dt_js_divs.append(dist_dt["js_divergence"])
             all_perplexities.append(dist_dt["perplexity"])
             prev_decision_probs = dist_dt["probs"]
@@ -624,6 +641,8 @@ def run_decode_agent_with_metrics(
     metrics = {
         # Flat arrays for plotting (unified view)
         "normalized_entropy":  dt_norm_entropies,
+        "raw_entropy":         dt_raw_entropies,
+        "entropy_logV":        entropy_logV_val,
         "js_divergence":       pu_js_divs,
         "cosine_similarity":   pu_cosines,
         "angular_distance":    pu_angular_dists,
@@ -632,6 +651,7 @@ def run_decode_agent_with_metrics(
         # Detailed phase-separated metrics for JSON
         "decision_time": {
             "normalized_entropy": dt_norm_entropies,
+            "raw_entropy":        dt_raw_entropies,
             "js_divergence":      dt_js_divs,
         },
         "post_update": {
@@ -904,15 +924,18 @@ def main():
         dataset = dataset[:args.max_samples]
     print(f"[Data] {args.task}: {len(dataset)} cases\n")
 
-    # ── Prepare TXT file ──
-    txt_path = os.path.join(args.out_dir, f"{prefix}_case_study.txt")
-    txt_file = open(txt_path, "w", encoding="utf-8")
-
     # ── Agent name mapping for TextMAS hierarchical context formatting ──
     _HIER_NAME_MAP = {
         "Planner": "Math Agent",  "Critic": "Science Agent",
         "Refiner": "Code Agent",  "Judger": "Task Summrizer",
     }
+
+    # ── Extract model metadata for JSON config ──
+    _lm_head = model_wrapper.model.get_output_embeddings()
+    if _lm_head is None:
+        _lm_head = getattr(model_wrapper.model, "lm_head", None)
+    _vocab_size = _lm_head.weight.shape[0] if _lm_head is not None else 0
+    _hidden_size = model_wrapper.model.config.hidden_size if hasattr(model_wrapper.model.config, "hidden_size") else 0
 
     # ═════════════════════════════════════════════════════════════════
     # Main loop
@@ -1082,6 +1105,19 @@ def main():
                         "agent_type": ag_type,
                         "values":     metrics[mk],
                     })
+                # raw_entropy and entropy_logV for JSON (not plotted via METRIC_KEYS)
+                if "raw_entropy" in metrics:
+                    data_rows.append({
+                        "case_idx": case_idx, "metric": "raw_entropy",
+                        "agent_role": agent.role, "exec_idx": exec_idx,
+                        "agent_type": ag_type, "values": metrics["raw_entropy"],
+                    })
+                if "entropy_logV" in metrics:
+                    data_rows.append({
+                        "case_idx": case_idx, "metric": "entropy_logV",
+                        "agent_role": agent.role, "exec_idx": exec_idx,
+                        "agent_type": ag_type, "values": metrics["entropy_logV"],
+                    })
                 exec_idx += 1
 
             # Store this case's hidden records for deferred top-token analysis
@@ -1175,6 +1211,18 @@ def main():
                         "agent_type": ag_type,
                         "values":     metrics[mk],
                     })
+                if "raw_entropy" in metrics:
+                    data_rows.append({
+                        "case_idx": case_idx, "metric": "raw_entropy",
+                        "agent_role": agent.role, "exec_idx": exec_idx,
+                        "agent_type": ag_type, "values": metrics["raw_entropy"],
+                    })
+                if "entropy_logV" in metrics:
+                    data_rows.append({
+                        "case_idx": case_idx, "metric": "entropy_logV",
+                        "agent_role": agent.role, "exec_idx": exec_idx,
+                        "agent_type": ag_type, "values": metrics["entropy_logV"],
+                    })
                 exec_idx += 1
 
                 if agent.role != "judger":
@@ -1238,6 +1286,18 @@ def main():
                     "agent_type": ag_type,
                     "values":     metrics[mk],
                 })
+            if "raw_entropy" in metrics:
+                data_rows.append({
+                    "case_idx": case_idx, "metric": "raw_entropy",
+                    "agent_role": "baseline", "exec_idx": 0,
+                    "agent_type": ag_type, "values": metrics["raw_entropy"],
+                })
+            if "entropy_logV" in metrics:
+                data_rows.append({
+                    "case_idx": case_idx, "metric": "entropy_logV",
+                    "agent_role": "baseline", "exec_idx": 0,
+                    "agent_type": ag_type, "values": metrics["entropy_logV"],
+                })
 
         # ── Evaluate answer ──
         pred, gold, correct = evaluate_answer(final_text, item, args.task)
@@ -1251,40 +1311,61 @@ def main():
             "correct":    correct,
         })
 
-        # ── Write TXT (first max_txt_cases only) ──
-        if case_idx < args.max_txt_cases:
-            write_txt_case(
-                txt_file, case_idx, question, agent_records,
-                boundary_rows, final_text, pred, str(gold), correct,
-            )
+        # (case_study.txt disabled)
 
         torch.cuda.empty_cache()
 
     # ═════════════════════════════════════════════════════════════════
-    # Deferred top-token analysis  (latent_mas only)
+    # Deferred top-token analysis  (latent_mas only, TXT only)
     # ═════════════════════════════════════════════════════════════════
     if args.method == "latent_mas" and all_cases_hidden_records:
         print(f"\n[Top-token analysis] Processing {len(all_cases_hidden_records)} cases ...")
         top_tokens_path = os.path.join(
-            args.out_dir, f"{prefix}_latent_top_tokens.json",
+            args.out_dir, f"{prefix}_latent_top_tokens.txt",
         )
         batch_project_hidden_states(
             model_wrapper, all_cases_hidden_records,
             out_path=top_tokens_path,
         )
 
+    # ═════════════════════════════════════════════════════════════════
+    # New analyses (latent_mas only, require stored hidden states)
+    # ═════════════════════════════════════════════════════════════════
+    if args.method == "latent_mas" and all_cases_hidden_records:
+        # Figure 3(a): Entropy vs JS divergence
+        print("\n[Entropy-JS analysis] ...")
+        run_entropy_js_analysis(
+            model_wrapper, all_cases_hidden_records,
+            out_dir=args.out_dir, prefix=prefix,
+            target_steps=None,  # all steps
+        )
+
+        # Figure 3(b): Logit-lens overlap
+        print("\n[Logit-lens overlap] ...")
+        run_logit_lens_overlap(
+            model_wrapper, all_cases_hidden_records,
+            out_dir=args.out_dir, prefix=prefix,
+            target_steps=None,  # default: first, mid, last per agent
+        )
+
+        # PCA: hidden states vs token embeddings
+        print("\n[PCA hidden vs embedding] ...")
+        run_pca_hidden_vs_embedding(
+            model_wrapper, all_cases_hidden_records,
+            out_dir=args.out_dir, prefix=prefix,
+        )
+
     # ── Summary ──
     total = len(dataset)
     accuracy = n_correct / total if total > 0 else 0.0
-
-    write_txt_summary(txt_file, args, total, n_correct, accuracy)
-    print(f"\n[Saved] {txt_path}")
 
     # ── Save JSON ──
     json_path = save_json_results(
         args, prefix, agents, cases_meta,
         data_rows, boundary_rows, perplexity_rows,
         total, n_correct, accuracy,
+        vocab_size=_vocab_size,
+        hidden_size=_hidden_size,
     )
 
     # ── Plots ──
