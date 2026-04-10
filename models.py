@@ -429,9 +429,7 @@ class ModelWrapper:
         """Forward pass returning per-layer last-position hidden states and updated KV cache.
 
         Returns:
-            past_key_values: updated KV cache
-            layer_hiddens_cpu: list of [B, D] CPU float16 tensors (one per layer incl. embedding)
-            last_hidden_gpu: [B, D] tensor on device (last transformer layer output)
+            past_key_values, layer_hiddens_cpu (list of [B,D] fp16), last_hidden_gpu [B,D]
         """
         device = self.device
         attn = attention_mask.to(device) if attention_mask is not None else None
@@ -440,23 +438,14 @@ class ModelWrapper:
             if plen > 0:
                 pm = torch.ones((attn.shape[0], plen), dtype=attn.dtype, device=device)
                 attn = torch.cat([pm, attn], dim=-1)
-
-        kwargs = dict(
-            attention_mask=attn,
-            past_key_values=past_key_values,
-            use_cache=True,
-            output_hidden_states=True,
-            return_dict=True,
-        )
+        kwargs = dict(attention_mask=attn, past_key_values=past_key_values,
+                      use_cache=True, output_hidden_states=True, return_dict=True)
         if input_ids is not None:
             kwargs["input_ids"] = input_ids.to(device)
         else:
             kwargs["inputs_embeds"] = inputs_embeds.to(device)
-
         outputs = self.model(**kwargs)
-        layer_hiddens_cpu = [
-            h[:, -1, :].detach().cpu().to(torch.float16) for h in outputs.hidden_states
-        ]
+        layer_hiddens_cpu = [h[:, -1, :].detach().cpu().to(torch.float16) for h in outputs.hidden_states]
         last_hidden_gpu = outputs.hidden_states[-1][:, -1, :].detach().clone()
         return outputs.past_key_values, layer_hiddens_cpu, last_hidden_gpu
 
@@ -469,42 +458,52 @@ class ModelWrapper:
         temperature: float = 0.6,
         top_p: float = 0.95,
     ) -> Tuple[torch.Tensor, Tuple, List[torch.Tensor]]:
-        """Single auto-regressive decode step with per-layer hidden collection.
+        """Single decode step WITH per-layer hidden collection.
 
-        Args:
-            token_ids: [B, 1]
-            attention_mask: [B, total_seq_len] including past
-            past_key_values: KV cache
-
-        Returns:
-            next_token: [B]
-            past_key_values: updated
-            layer_hiddens_cpu: list of [B, D] CPU float16
+        Returns: next_token [B], past_kv, layer_hiddens_cpu
         """
         outputs = self.model(
             input_ids=token_ids.to(self.device),
             attention_mask=attention_mask.to(self.device),
             past_key_values=past_key_values,
-            use_cache=True,
-            output_hidden_states=True,
-            return_dict=True,
+            use_cache=True, output_hidden_states=True, return_dict=True,
         )
-        layer_hiddens_cpu = [
-            h[:, -1, :].detach().cpu().to(torch.float16) for h in outputs.hidden_states
-        ]
-        logits = outputs.logits[:, -1, :]  # [B, vocab]
+        layer_hiddens_cpu = [h[:, -1, :].detach().cpu().to(torch.float16) for h in outputs.hidden_states]
+        next_token = self._sample_from_logits(outputs.logits[:, -1, :], temperature, top_p)
+        return next_token, outputs.past_key_values, layer_hiddens_cpu
 
+    @torch.no_grad()
+    def decode_step_simple(
+        self,
+        token_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        past_key_values: Tuple,
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+    ) -> Tuple[torch.Tensor, Tuple]:
+        """Single decode step WITHOUT hidden collection (fast path).
+
+        Returns: next_token [B], past_kv
+        """
+        outputs = self.model(
+            input_ids=token_ids.to(self.device),
+            attention_mask=attention_mask.to(self.device),
+            past_key_values=past_key_values,
+            use_cache=True, return_dict=True,
+        )
+        next_token = self._sample_from_logits(outputs.logits[:, -1, :], temperature, top_p)
+        return next_token, outputs.past_key_values
+
+    def _sample_from_logits(self, logits: torch.Tensor, temperature: float, top_p: float) -> torch.Tensor:
+        """Top-p sampling from logits [B, V]. Returns [B]."""
         if temperature > 0:
             logits = logits / temperature
-            sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
-            cum_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-            remove = cum_probs - torch.softmax(sorted_logits, dim=-1) >= top_p
-            sorted_logits[remove] = float("-inf")
-            probs = torch.softmax(sorted_logits, dim=-1)
-            sampled_idx = torch.multinomial(probs, num_samples=1)
-            next_token = sorted_indices.gather(1, sampled_idx).squeeze(-1)
-        else:
-            next_token = logits.argmax(dim=-1)
-
-        return next_token, outputs.past_key_values, layer_hiddens_cpu
+            sl, si = torch.sort(logits, descending=True, dim=-1)
+            cum = torch.cumsum(torch.softmax(sl, dim=-1), dim=-1)
+            remove = cum - torch.softmax(sl, dim=-1) >= top_p
+            sl[remove] = float("-inf")
+            probs = torch.softmax(sl, dim=-1)
+            idx = torch.multinomial(probs, 1)
+            return si.gather(1, idx).squeeze(-1)
+        return logits.argmax(dim=-1)
 
