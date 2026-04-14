@@ -88,7 +88,7 @@ def main():
     parser.add_argument("--method", choices=["baseline", "text_mas", "latent_mas"], required=True,
                         help="Which multi-agent method to run: 'baseline', 'text_mas', or 'latent_mas'.")
     parser.add_argument("--model_name", type=str, required=True,
-                        choices=["Qwen/Qwen3-4B", "Qwen/Qwen3-8B", "Qwen/Qwen3-14B"],
+                        choices=["Qwen/Qwen3-4B", "Qwen/Qwen3-4B", "Qwen/Qwen3-14B"],
                         help="Model choices to use for experiments (e.g. 'Qwen/Qwen3-14B').")
     parser.add_argument("--max_samples", type=int, default=-1, help="Number of questions to evaluate; set -1 to use all samples.")
     parser.add_argument("--task", choices=["gsm8k", "aime2024", "aime2025", "gpqa", "arc_easy", "arc_challenge", "mbppplus", 'humanevalplus', 'medqa'], default="gsm8k",
@@ -107,6 +107,16 @@ def main():
     parser.add_argument("--think", action="store_true", help="Manually add think token in the prompt for LatentMAS")
     parser.add_argument("--latent_space_realign", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
+
+    # latent_mas position freeze
+    parser.add_argument("--latent_freeze_position_after_step", type=int, default=-1,
+                        help="Latent step index from which RoPE position is frozen (-1 = disabled)")
+    parser.add_argument("--latent_frozen_position_id", type=int, default=3,
+                        help="The fixed RoPE position id used when freeze is active")
+
+    # output
+    parser.add_argument("--out_dir", type=str, default="example_logs",
+                        help="Directory for latent_mas top-5 token TXT export")
 
     # vLLM support
     parser.add_argument("--use_vllm", action="store_true", help="Use vLLM backend for generation")
@@ -244,6 +254,12 @@ def main():
             ensure_ascii=False,
         )
     )
+
+    # Export latent top-5 tokens TXT (latent_mas only)
+    if args.method == "latent_mas" and hasattr(method, "write_latent_top5_txt"):
+        short_model = args.model_name.split("/")[-1]
+        prefix = f"{args.task}_{short_model}_{args.method}"
+        method.write_latent_top5_txt(args.out_dir, prefix)
 
 
 
