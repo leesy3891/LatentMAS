@@ -251,6 +251,220 @@ def _compute_mmd2_rbf(coords_a: np.ndarray, coords_b: np.ndarray,
 
 
 # ============================================================
+# Entropy + KL helpers
+# ============================================================
+
+def _gaussian_kl_2d(mu_p: np.ndarray, cov_p: np.ndarray,
+                     mu_q: np.ndarray, cov_q: np.ndarray) -> float:
+    """KL(P || Q) for two 2-D Gaussians.
+
+    KL = 0.5 * [tr(Σ_q⁻¹ Σ_p) + (μ_q - μ_p)ᵀ Σ_q⁻¹ (μ_q - μ_p) - k + ln|Σ_q| - ln|Σ_p|]
+    """
+    try:
+        cov_q_inv = np.linalg.inv(cov_q)
+        _, logdet_p = np.linalg.slogdet(cov_p)
+        _, logdet_q = np.linalg.slogdet(cov_q)
+        diff = mu_q - mu_p
+        kl = 0.5 * (
+            np.trace(cov_q_inv @ cov_p)
+            + diff @ cov_q_inv @ diff
+            - 2
+            + logdet_q - logdet_p
+        )
+        return float(kl)
+    except np.linalg.LinAlgError:
+        return float("nan")
+
+
+def compute_entropy_per_layer(
+    sampled: Dict[int, list],
+    num_layers: int,
+    agents_sorted: List[str],
+) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+    """Per-sample spectral entropy of hidden vectors, grouped by (layer, agent).
+
+    Spectral entropy of a vector h:
+        p_i = h_i² / Σ_j h_j²
+        H   = -Σ_i p_i log(p_i)
+
+    Returns:
+        entropy_mean / entropy_std : dicts  agent_name -> np.array [num_layers]
+    """
+    entropy_mean = {a: np.full(num_layers, np.nan) for a in agents_sorted}
+    entropy_std  = {a: np.full(num_layers, np.nan) for a in agents_sorted}
+
+    for li in range(num_layers):
+        recs = sampled.get(li, [])
+        if not recs:
+            continue
+        by_agent: Dict[str, list] = {}
+        for rec in recs:
+            by_agent.setdefault(rec["agent_name"], []).append(rec)
+
+        for aname in agents_sorted:
+            agent_recs = by_agent.get(aname, [])
+            if not agent_recs:
+                continue
+            entropies = []
+            for rec in agent_recs:
+                h = rec["vec"].float().numpy()   # [D]
+                sq = h ** 2
+                s = sq.sum()
+                if s < 1e-12:
+                    continue
+                p = sq / s
+                ent = float(-np.sum(p * np.log(p + 1e-12)))
+                entropies.append(ent)
+            if entropies:
+                entropy_mean[aname][li] = float(np.mean(entropies))
+                entropy_std[aname][li]  = float(np.std(entropies))
+
+    return entropy_mean, entropy_std
+
+
+def compute_kl_per_layer(
+    pca_coords_dict: Dict[int, Tuple],
+    num_layers: int,
+    agents_sorted: List[str],
+    n_bootstrap: int = 80,
+    seed: int = 42,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+    """KL(agent || overall) per layer, via bootstrap on 2-D PCA coords.
+
+    Both the agent distribution and the overall distribution are approximated
+    as 2-D Gaussians.  Bootstrap resampling provides the ±1 σ band.
+
+    Returns:
+        kl_mean / kl_std : dicts  agent_name -> np.array [num_layers]
+    """
+    rng = np.random.RandomState(seed)
+    kl_mean = {a: np.full(num_layers, np.nan) for a in agents_sorted}
+    kl_std  = {a: np.full(num_layers, np.nan) for a in agents_sorted}
+
+    for li in range(num_layers):
+        coords_all, recs_all = pca_coords_dict.get(li, (None, []))
+        if coords_all is None or len(coords_all) < 4:
+            continue
+
+        # Reference (overall) Gaussian – fitted once per layer
+        mu_all  = coords_all.mean(axis=0)
+        cov_all = np.cov(coords_all.T) + 1e-6 * np.eye(2)
+
+        # Index records by agent
+        by_agent_idx: Dict[str, list] = {}
+        for j, rec in enumerate(recs_all):
+            by_agent_idx.setdefault(rec["agent_name"], []).append(j)
+
+        for aname in agents_sorted:
+            idxs = by_agent_idx.get(aname, [])
+            if len(idxs) < 4:
+                continue
+            coords_a = coords_all[idxs]
+            n = len(coords_a)
+            bs = min(n, 50)   # bootstrap sample size
+
+            kl_vals = []
+            for _ in range(n_bootstrap):
+                sample = coords_a[rng.choice(n, size=bs, replace=True)]
+                mu_s  = sample.mean(axis=0)
+                cov_s = np.cov(sample.T) + 1e-6 * np.eye(2)
+                kl = _gaussian_kl_2d(mu_s, cov_s, mu_all, cov_all)
+                if np.isfinite(kl):
+                    kl_vals.append(kl)
+
+            if kl_vals:
+                kl_mean[aname][li] = float(np.mean(kl_vals))
+                kl_std[aname][li]  = float(np.std(kl_vals))
+
+    return kl_mean, kl_std
+
+
+def plot_entropy_and_kl(
+    entropy_mean: Dict[str, np.ndarray],
+    entropy_std:  Dict[str, np.ndarray],
+    kl_mean:      Dict[str, np.ndarray],
+    kl_std:       Dict[str, np.ndarray],
+    agents_sorted: List[str],
+    agent_colors:  Dict[str, tuple],
+    num_layers: int,
+    method: str,
+    model_name: str,
+    task: str,
+    out_dir: str,
+) -> str:
+    """Two-panel figure: (a) Shannon entropy  (b) KL divergence, per agent.
+
+    Each line = agent mean across samples.  Shaded band = ±1 σ.
+    X-axis last tick is labeled 'Output Layer'.
+
+    Returns saved filename.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    short_model = model_name.split("/")[-1]
+
+    x = np.arange(num_layers)
+    # Tick positions: every ~4 layers + last layer
+    tick_step = max(1, num_layers // 16)
+    xticks = list(range(0, num_layers - 1, tick_step))
+    if (num_layers - 1) not in xticks:
+        xticks.append(num_layers - 1)
+
+    def _xlabels(ticks):
+        return ["Output" if t == num_layers - 1 else str(t) for t in ticks]
+
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+
+    panels = [
+        (entropy_mean, entropy_std, "Spectral Shannon Entropy",
+         "per-sample H(h)  [nats]"),
+        (kl_mean,      kl_std,      "KL Divergence  agent ‖ overall",
+         "KL(agent ‖ overall)  [nats]  (bootstrap ±1σ)"),
+    ]
+
+    for ax, (mu_dict, std_dict, title, ylabel) in zip(axes, panels):
+        any_plotted = False
+        for aname in agents_sorted:
+            mu  = mu_dict[aname]
+            std = std_dict[aname]
+            valid = np.isfinite(mu)
+            if not np.any(valid):
+                continue
+            xv   = x[valid]
+            muv  = mu[valid]
+            stdv = std[valid]
+            color = agent_colors[aname]
+            ax.plot(xv, muv, color=color, label=aname, linewidth=1.5, zorder=3)
+            ax.fill_between(xv, muv - stdv, muv + stdv,
+                            color=color, alpha=0.20, zorder=2)
+            any_plotted = True
+
+        # Vertical line + label for output layer
+        ax.axvline(num_layers - 1, color="gray", linestyle="--",
+                   linewidth=0.8, alpha=0.6, zorder=1)
+        ax.text(num_layers - 1 + 0.15, ax.get_ylim()[1] if any_plotted else 1,
+                "Output\nLayer", fontsize=6.5, color="gray", va="top")
+
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(_xlabels(xticks), fontsize=7, rotation=45)
+        ax.set_xlabel("Layer", fontsize=9)
+        ax.set_ylabel(ylabel, fontsize=8)
+        ax.set_title(
+            f"{title}\n{short_model}  |  {task}  |  {method}",
+            fontsize=9,
+        )
+        ax.legend(fontsize=7.5, loc="best", framealpha=0.8)
+        ax.grid(True, alpha=0.25, linewidth=0.5)
+
+    fig.tight_layout()
+    fname = f"{task}_{short_model}_{method}_entropy_kl.png"
+    fpath = os.path.join(out_dir, fname)
+    fig.savefig(fpath, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {fpath}")
+    return fname
+
+
+# ============================================================
 # Collection: latent_mas
 # ============================================================
 
@@ -418,7 +632,7 @@ def run_pca_and_plot(sampled, num_layers, method, model_name, task, seed,
         for r in recs:
             all_agents.add(r["agent_name"])
     agents_sorted = sorted(all_agents)
-    cmap = plt.cm.get_cmap("tab10")
+    cmap = plt.colormaps["tab10"]
     agent_colors = {n: cmap(i) for i, n in enumerate(agents_sorted)}
 
     # ----------------------------------------------------------------
@@ -602,5 +816,20 @@ def run_pca_and_plot(sampled, num_layers, method, model_name, task, seed,
         plt.close(fig)
         saved_files.append(fname)
         print(f"Saved figure: {fpath}")
+
+    # ----------------------------------------------------------------
+    # Pass 3: Shannon entropy + KL divergence plots
+    # ----------------------------------------------------------------
+    print("Computing per-layer entropy and KL divergence …")
+    entropy_mean, entropy_std = compute_entropy_per_layer(sampled, num_layers, agents_sorted)
+    kl_mean, kl_std = compute_kl_per_layer(
+        pca_coords, num_layers, agents_sorted, n_bootstrap=80, seed=seed
+    )
+    ek_fname = plot_entropy_and_kl(
+        entropy_mean, entropy_std, kl_mean, kl_std,
+        agents_sorted, agent_colors, num_layers,
+        method, model_name, task, out_dir,
+    )
+    saved_files.append(ek_fname)
 
     return saved_files, txt_path
