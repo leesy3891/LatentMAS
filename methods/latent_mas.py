@@ -50,6 +50,10 @@ class LatentMASMethod:
         )
         self.task = args.task
 
+        # Buffer for latent top-5 token export (latent_mas only)
+        self._top5_buffer: List[Dict] = []
+        self._case_counter: int = 0  # global case index across batches
+
     @staticmethod
     def _slice_tensor(tensor: torch.Tensor, tokens_to_keep: int) -> torch.Tensor:
         if tokens_to_keep <= 0:
@@ -127,12 +131,24 @@ class LatentMASMethod:
                     active_ids = ids_row[mask_row.bool()].tolist()
                     wrapped_tokens_batch.append(self.model.tokenizer.convert_ids_to_tokens(active_ids))
 
-                past_kv = self.model.generate_latent_batch(
+                past_kv, latent_hiddens_cpu = self.model.generate_latent_batch(
                     wrapped_ids,
                     attention_mask=wrapped_mask,
                     latent_steps=self.latent_steps,
                     past_key_values=past_kv,
+                    collect_latent_hiddens=True,
                 )
+
+                # Compute top-5 tokens for each latent step (for TXT export)
+                for step_i, hidden_cpu in enumerate(latent_hiddens_cpu):
+                    top5_per_batch = self.model.lm_head_top_k(hidden_cpu, k=5)
+                    for b_idx in range(batch_size):
+                        self._top5_buffer.append({
+                            "case_idx": self._case_counter + b_idx,
+                            "agent_name": agent.name,
+                            "step": step_i,
+                            "top5": top5_per_batch[b_idx],
+                        })
                 if self.sequential_info_only or self.latent_only:
                     new_past_len = _past_length(past_kv)
                     tokens_added = new_past_len - prev_past_len
@@ -246,8 +262,9 @@ class LatentMASMethod:
                     "correct": ok,
                 }
             )
+        self._case_counter += batch_size
         return results
-    
+
     def run_batch_vllm(self, items: List[Dict]) -> List[Dict]:
         if len(items) > self.generate_bs:
             raise ValueError("Batch size exceeds configured generate_bs")
@@ -297,12 +314,24 @@ class LatentMASMethod:
                     active_ids = ids_row[mask_row.bool()].tolist()
                     wrapped_tokens_batch.append(self.model.tokenizer.convert_ids_to_tokens(active_ids))
 
-                past_kv, previous_hidden_embedding = self.model.generate_latent_batch_hidden_state(
+                past_kv, previous_hidden_embedding, latent_hiddens_cpu = self.model.generate_latent_batch_hidden_state(
                     wrapped_ids,
                     attention_mask=wrapped_mask,
                     latent_steps=self.latent_steps,
                     past_key_values=past_kv,
+                    collect_latent_hiddens=True,
                 )
+
+                # Compute top-5 tokens for each latent step (for TXT export)
+                for step_i, hidden_cpu in enumerate(latent_hiddens_cpu):
+                    top5_per_batch = self.model.lm_head_top_k(hidden_cpu, k=5)
+                    for b_idx in range(batch_size):
+                        self._top5_buffer.append({
+                            "case_idx": self._case_counter + b_idx,
+                            "agent_name": agent.name,
+                            "step": step_i,
+                            "top5": top5_per_batch[b_idx],
+                        })
                 if self.sequential_info_only or self.latent_only:
                     new_past_len = _past_length(past_kv)
                     tokens_added = new_past_len - prev_past_len
@@ -435,7 +464,76 @@ class LatentMASMethod:
                     "correct": ok,
                 }
             )
+        self._case_counter += batch_size
         return results
 
     def run_item(self, item: Dict) -> Dict:
         return self.run_batch([item])[0]
+
+    # ----------------------------------------------------------------
+    # Latent top-5 token TXT export
+    # ----------------------------------------------------------------
+
+    @staticmethod
+    def _escape_token(text: str) -> str:
+        """Make invisible / whitespace tokens human-readable."""
+        text = text.replace("\n", "\\n")
+        text = text.replace("\r", "\\r")
+        text = text.replace("\t", "\\t")
+        if text == " ":
+            text = "<space>"
+        elif text == "":
+            text = "<empty>"
+        # Replace other non-printable chars
+        out = []
+        for ch in text:
+            if ord(ch) < 32 and ch not in ("\n", "\r", "\t"):
+                out.append(f"\\x{ord(ch):02x}")
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    def write_latent_top5_txt(self, out_dir: str, prefix: str) -> str:
+        """Write accumulated top-5 buffer to a TXT file.
+
+        Args:
+            out_dir: output directory
+            prefix: filename prefix, e.g. ``aime2025_Qwen3-14B_latent_mas``
+
+        Returns:
+            Path of the saved file.
+        """
+        import os
+        os.makedirs(out_dir, exist_ok=True)
+        fpath = os.path.join(out_dir, f"{prefix}_latent_top5_tokens.txt")
+
+        # Group by (case_idx, agent_name) preserving insertion order
+        from collections import OrderedDict
+        groups: OrderedDict = OrderedDict()
+        for rec in self._top5_buffer:
+            key = (rec["case_idx"], rec["agent_name"])
+            groups.setdefault(key, []).append(rec)
+
+        lines: List[str] = []
+        prev_case = None
+        for (case_idx, agent_name), recs in groups.items():
+            if prev_case != case_idx:
+                if prev_case is not None:
+                    lines.append("")
+                lines.append(f"=== Case {case_idx} ===")
+                prev_case = case_idx
+
+            lines.append(f"  Agent: {agent_name}")
+            # sort by step just in case
+            recs_sorted = sorted(recs, key=lambda r: r["step"])
+            for rec in recs_sorted:
+                tokens_str = ", ".join(
+                    f"{self._escape_token(tok)}:{prob:.4f}"
+                    for tok, prob in rec["top5"]
+                )
+                lines.append(f"  step {rec['step']}: [{tokens_str}]")
+
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"Saved latent top-5 tokens: {fpath}")
+        return fpath
