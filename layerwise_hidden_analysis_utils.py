@@ -713,7 +713,8 @@ def run_pca_and_plot(sampled, num_layers, method, model_name, task, seed,
             pc1_str = "  ".join(f"{x:+.6f}" for x in pc1[:10])
             pc2_str = "  ".join(f"{x:+.6f}" for x in pc2[:10])
             suffix = "  ..." if pc1.shape[0] > 10 else ""
-            n_clean = len(vecs_clean_np.get(li) or [])
+            arr = vecs_clean_np.get(li)
+            n_clean = len(arr) if arr is not None else 0
             txt_lines.append(
                 f"[{label}]  n_samples={n_clean}"
                 f"  evr=[{evr[0]:.4f}, {evr[1]:.4f}]"
