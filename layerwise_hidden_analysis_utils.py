@@ -514,8 +514,11 @@ def collect_latent_mas_states(model, agents, items, args, collector,
                     latent_emb = latent_vec.unsqueeze(1)
                     plen = _past_length(past_kv)
                     lmask = torch.ones((1, plen + 1), dtype=torch.long, device=model.device)
+                    # Position freeze for RoPE (mirrors generate_latent_batch)
+                    pos_ids = model._compute_latent_position_ids(step, plen, 1, model.device)
                     past_kv, layer_h, last_gpu = model.forward_collect_layerwise(
-                        inputs_embeds=latent_emb, attention_mask=lmask, past_key_values=past_kv)
+                        inputs_embeds=latent_emb, attention_mask=lmask,
+                        past_key_values=past_kv, position_ids=pos_ids)
                     collector.add_all_layers(layer_h, case_idx, agent.name, step + 1, "latent")
             else:
                 # Judger: prefill + full decode
