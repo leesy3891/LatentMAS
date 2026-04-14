@@ -1,19 +1,21 @@
 """
-layerwise_hidden_analysis_utils.py
-----------------------------------
-Key design:
-- Judger ALWAYS runs full decode (up to max_new_tokens) and its hidden states
-  are always collected.
-- Hidden states at decode steps are collected only at uniformly pre-selected
-  indices to control memory; all other steps use a fast path (no hidden output).
-- Evaluation accuracy is computed and returned.
-- PCA scatter is colored by agent identity.
+layerwise_hidden_analysis_utils.py (updated)
+--------------------------------------------
+Changes vs original:
+  1. Per-layer independent PCA (each subplot gets its own fit)
+  2. Outlier removal: top-5 points by L2 distance from centroid removed before PCA
+  3. FID and MMD² vs previous layer computed in current layer's 2D PCA space,
+     shown below each subplot
+  4. Dot size s=3, max 4 columns per row
+  5. Last layer (num_layers-1) labeled "Output Layer" instead of "Layer ##"
+  6. PC axes (components + explained variance) saved to .txt (not JSON)
+  7. Meta JSON removed; replaced by .txt
 """
 
 import json
 import math
 import os
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import torch
@@ -21,6 +23,7 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from sklearn.decomposition import PCA
 
 from models import ModelWrapper, _past_length
@@ -180,6 +183,74 @@ def _decode_loop(model, past_kv, first_logits, max_tokens, temperature, top_p,
 
 
 # ============================================================
+# PCA helpers: outlier removal + distance metrics
+# ============================================================
+
+def _remove_outliers(vecs_np: np.ndarray, n_remove: int = 5):
+    """Remove top n_remove points by L2 distance from centroid.
+
+    Returns (cleaned_vecs, keep_indices).
+    """
+    n = len(vecs_np)
+    if n <= n_remove + 4:
+        return vecs_np, list(range(n))
+    centroid = vecs_np.mean(axis=0)
+    dists = np.linalg.norm(vecs_np - centroid, axis=1)
+    outlier_set = set(np.argsort(dists)[-n_remove:].tolist())
+    keep = [i for i in range(n) if i not in outlier_set]
+    return vecs_np[keep], keep
+
+
+def _compute_fid_2d(coords_a: np.ndarray, coords_b: np.ndarray) -> float:
+    """Fréchet distance between two 2-D point sets (Gaussian approximation).
+
+    Both arrays are shape [N, 2].
+    """
+    from scipy.linalg import sqrtm
+    if len(coords_a) < 4 or len(coords_b) < 4:
+        return float("nan")
+    mu_a = coords_a.mean(axis=0)
+    mu_b = coords_b.mean(axis=0)
+    cov_a = np.cov(coords_a.T) + 1e-6 * np.eye(2)
+    cov_b = np.cov(coords_b.T) + 1e-6 * np.eye(2)
+    diff = mu_a - mu_b
+    sqrt_prod = sqrtm(cov_a @ cov_b)
+    if np.iscomplexobj(sqrt_prod):
+        sqrt_prod = sqrt_prod.real
+    fid = float(diff @ diff + np.trace(cov_a + cov_b - 2.0 * sqrt_prod))
+    return fid
+
+
+def _compute_mmd2_rbf(coords_a: np.ndarray, coords_b: np.ndarray,
+                      max_n: int = 400) -> float:
+    """Unbiased MMD² with RBF kernel on 2-D coords."""
+    rng = np.random.RandomState(42)
+    if len(coords_a) > max_n:
+        coords_a = coords_a[rng.choice(len(coords_a), max_n, replace=False)]
+    if len(coords_b) > max_n:
+        coords_b = coords_b[rng.choice(len(coords_b), max_n, replace=False)]
+    all_pts = np.vstack([coords_a, coords_b])
+    sq_dists = np.sum((all_pts[:, None] - all_pts[None, :]) ** 2, axis=-1)
+    pos = sq_dists[sq_dists > 0]
+    sigma2 = float(np.median(pos)) / 2.0 if len(pos) > 0 else 1.0
+
+    def rbf(x, y):
+        d = np.sum((x[:, None] - y[None, :]) ** 2, axis=-1)
+        return np.exp(-d / (2.0 * sigma2))
+
+    kxx = rbf(coords_a, coords_a)
+    kyy = rbf(coords_b, coords_b)
+    kxy = rbf(coords_a, coords_b)
+    n, m = len(coords_a), len(coords_b)
+    val = (
+        (kxx.sum() - np.trace(kxx)) / max(n * (n - 1), 1)
+        + (kyy.sum() - np.trace(kyy)) / max(m * (m - 1), 1)
+        - 2.0 * kxy.mean()
+    )
+    return float(val)
+
+
+# ============================================================
 # Collection: latent_mas
 # ============================================================
 
@@ -336,11 +407,13 @@ def collect_text_mas_states(model, agents, items, args, collector,
 
 def run_pca_and_plot(sampled, num_layers, method, model_name, task, seed,
                      latent_steps, max_samples, out_dir, pca_chunk_size):
+    """Per-layer PCA with outlier removal, FID/MMD² vs previous layer, and txt meta output."""
     os.makedirs(out_dir, exist_ok=True)
     short_model = model_name.split("/")[-1]
     prefix = f"{task}_{short_model}_{method}"
 
-    all_agents = set()
+    # --- Agent colour map ---
+    all_agents: set = set()
     for recs in sampled.values():
         for r in recs:
             all_agents.add(r["agent_name"])
@@ -348,89 +421,186 @@ def run_pca_and_plot(sampled, num_layers, method, model_name, task, seed,
     cmap = plt.cm.get_cmap("tab10")
     agent_colors = {n: cmap(i) for i, n in enumerate(agents_sorted)}
 
-    pca_results = {}
-    gmin, gmax = np.array([np.inf, np.inf]), np.array([-np.inf, -np.inf])
+    # ----------------------------------------------------------------
+    # Pass 1: per-layer outlier removal + independent PCA
+    # ----------------------------------------------------------------
+    pca_objects: Dict[int, Optional[PCA]] = {}
+    pca_coords: Dict[int, Tuple] = {}       # li -> (coords [N,2], kept_recs)
+    vecs_clean_np: Dict[int, Optional[np.ndarray]] = {}  # li -> float32 [N, D]
+
+    print("Fitting per-layer PCA …")
     for li in range(num_layers):
         recs = sampled.get(li, [])
-        if len(recs) < 2:
-            pca_results[li] = (None, recs)
+        if len(recs) < 4:
+            pca_objects[li] = None
+            pca_coords[li] = (None, recs)
+            vecs_clean_np[li] = None
             continue
-        vecs = torch.stack([r["vec"].float() for r in recs]).numpy()
+
+        vecs = torch.stack([r["vec"].float() for r in recs]).numpy()  # [N, D]
+
+        # Outlier removal (top-5 by L2 from centroid)
+        vecs_c, keep = _remove_outliers(vecs, n_remove=5)
+        kept_recs = [recs[i] for i in keep]
+
+        # Independent PCA per layer
         pca = PCA(n_components=2, random_state=seed)
-        coords = pca.fit_transform(vecs)
-        pca_results[li] = (coords, recs)
-        gmin = np.minimum(gmin, coords.min(axis=0))
-        gmax = np.maximum(gmax, coords.max(axis=0))
+        coords = pca.fit_transform(vecs_c)  # [N, 2]
 
-    margin = (gmax - gmin) * 0.05
-    margin = np.where(np.isfinite(margin), margin, 1.0)
-    gmin -= margin
-    gmax += margin
+        pca_objects[li] = pca
+        pca_coords[li] = (coords, kept_recs)
+        vecs_clean_np[li] = vecs_c
 
+    # ----------------------------------------------------------------
+    # Pass 2: FID + MMD² vs previous layer (in current layer's PCA space)
+    # ----------------------------------------------------------------
+    print("Computing FID / MMD² …")
+    metrics: Dict[int, Tuple[float, float]] = {}
+    metrics[0] = (float("nan"), float("nan"))
+
+    for li in range(1, num_layers):
+        pca_curr = pca_objects.get(li)
+        vecs_curr = vecs_clean_np.get(li)
+        vecs_prev = vecs_clean_np.get(li - 1)
+        if pca_curr is None or vecs_curr is None or vecs_prev is None:
+            metrics[li] = (float("nan"), float("nan"))
+            continue
+        # Project both distributions into current layer's 2D PCA space
+        coords_curr = pca_curr.transform(vecs_curr)
+        coords_prev = pca_curr.transform(vecs_prev)
+        fid = _compute_fid_2d(coords_curr, coords_prev)
+        mmd2 = _compute_mmd2_rbf(coords_curr, coords_prev)
+        metrics[li] = (fid, mmd2)
+
+    # ----------------------------------------------------------------
+    # Save PC axes to .txt
+    # ----------------------------------------------------------------
+    txt_lines = [
+        f"# Layer-wise PCA axes",
+        f"# method={method}  model={model_name}  task={task}  seed={seed}",
+        f"# latent_steps={latent_steps}  max_samples={max_samples}",
+        f"# Per-layer independent PCA (n_components=2)",
+        f"# Outlier removal: top-5 by L2 distance from centroid removed before PCA",
+        f"# FID/MMD² computed in current-layer PCA space (prev layer projected into current PCA)",
+        f"# PC vectors truncated to first 10 dimensions below; full dim saved as float32",
+        "",
+    ]
+    for li in range(num_layers):
+        label = "output_layer" if li == num_layers - 1 else f"layer_{li:02d}"
+        pca = pca_objects.get(li)
+        fid_v, mmd2_v = metrics.get(li, (float("nan"), float("nan")))
+        if pca is None:
+            txt_lines.append(f"[{label}]  n_samples={len(sampled.get(li, []))}  PCA=N/A")
+            txt_lines.append(f"  FID_vs_prev=N/A  MMD2_vs_prev=N/A")
+        else:
+            evr = pca.explained_variance_ratio_
+            pc1 = pca.components_[0]
+            pc2 = pca.components_[1]
+            pc1_str = "  ".join(f"{x:+.6f}" for x in pc1[:10])
+            pc2_str = "  ".join(f"{x:+.6f}" for x in pc2[:10])
+            suffix = "  ..." if pc1.shape[0] > 10 else ""
+            n_clean = len(vecs_clean_np.get(li) or [])
+            txt_lines.append(
+                f"[{label}]  n_samples={n_clean}"
+                f"  evr=[{evr[0]:.4f}, {evr[1]:.4f}]"
+            )
+            txt_lines.append(f"  PC1: {pc1_str}{suffix}")
+            txt_lines.append(f"  PC2: {pc2_str}{suffix}")
+            fid_str = f"{fid_v:.4f}" if not math.isnan(fid_v) else "N/A"
+            mmd_str = f"{mmd2_v:.6f}" if not math.isnan(mmd2_v) else "N/A"
+            txt_lines.append(f"  FID_vs_prev={fid_str}  MMD2_vs_prev={mmd_str}")
+        txt_lines.append("")
+
+    txt_path = os.path.join(out_dir, f"{prefix}_layerwise_pca_meta.txt")
+    with open(txt_path, "w") as f:
+        f.write("\n".join(txt_lines))
+    print(f"Saved meta: {txt_path}")
+
+    # ----------------------------------------------------------------
+    # Plot: max 4 columns, per-layer axis limits, FID/MMD² below subplot
+    # ----------------------------------------------------------------
+    MAX_COLS = 4
     chunks = [list(range(s, min(s + pca_chunk_size, num_layers)))
               for s in range(0, num_layers, pca_chunk_size)]
-
-    ncols_g = 4 if num_layers <= 16 else 12 if num_layers <= 48 else 10
-    if 16 < num_layers <= 40:
-        ncols_g = 10
 
     saved_files = []
     for ci, clayers in enumerate(chunks):
         n = len(clayers)
-        ncols = min(ncols_g, n)
+        ncols = min(MAX_COLS, n)
         nrows = math.ceil(n / ncols)
-        fig, axes = plt.subplots(nrows, ncols,
-                                 figsize=(4 * ncols, 4 * nrows), squeeze=False)
+
+        fig, axes = plt.subplots(
+            nrows, ncols,
+            figsize=(4.2 * ncols, 5.0 * nrows),
+            squeeze=False,
+        )
+
         for i, li in enumerate(clayers):
-            r, c = divmod(i, ncols)
-            ax = axes[r, c]
-            coords, recs = pca_results.get(li, (None, []))
-            ax.set_xlim(gmin[0], gmax[0])
-            ax.set_ylim(gmin[1], gmax[1])
-            ax.set_title(f"Layer {li:02d}", fontsize=8)
-            ax.tick_params(labelsize=6)
-            if coords is None:
-                continue
-            for aname in agents_sorted:
-                idxs = [j for j, rec in enumerate(recs) if rec["agent_name"] == aname]
-                if not idxs:
-                    continue
-                ax.scatter(coords[idxs, 0], coords[idxs, 1],
-                           c=[agent_colors[aname]], s=8, alpha=0.5,
-                           label=aname, rasterized=True)
+            row, col = divmod(i, ncols)
+            ax = axes[row][col]
+            coords, recs = pca_coords.get(li, (None, []))
+            fid_v, mmd2_v = metrics.get(li, (float("nan"), float("nan")))
+
+            # Title
+            if li == num_layers - 1:
+                ax.set_title("Output Layer", fontsize=8, fontweight="bold")
+            else:
+                ax.set_title(f"Layer {li:02d}", fontsize=8)
+            ax.tick_params(labelsize=5)
+
+            if coords is None or len(coords) == 0:
+                ax.text(0.5, 0.5, "N/A", ha="center", va="center",
+                        transform=ax.transAxes, fontsize=9)
+            else:
+                # Per-layer axis limits (tight around own PCA coords)
+                xpad = max((coords[:, 0].max() - coords[:, 0].min()) * 0.06, 1e-3)
+                ypad = max((coords[:, 1].max() - coords[:, 1].min()) * 0.06, 1e-3)
+                ax.set_xlim(coords[:, 0].min() - xpad, coords[:, 0].max() + xpad)
+                ax.set_ylim(coords[:, 1].min() - ypad, coords[:, 1].max() + ypad)
+
+                for aname in agents_sorted:
+                    idxs = [j for j, rec in enumerate(recs) if rec["agent_name"] == aname]
+                    if not idxs:
+                        continue
+                    ax.scatter(
+                        coords[idxs, 0], coords[idxs, 1],
+                        c=[agent_colors[aname]], s=3, alpha=0.45,
+                        label=aname, rasterized=True,
+                    )
+
+            # FID / MMD² label below subplot
+            if not math.isnan(fid_v):
+                xlabel = f"FID={fid_v:.2f}  MMD²={mmd2_v:.4f}"
+            else:
+                xlabel = "FID=N/A  MMD²=N/A"
+            ax.set_xlabel(xlabel, fontsize=5.5, labelpad=2)
+
+        # Hide unused cells
         for i in range(n, nrows * ncols):
-            r, c = divmod(i, ncols)
-            axes[r, c].set_visible(False)
-        for li in clayers:
-            coords, _ = pca_results.get(li, (None, []))
-            if coords is not None:
-                r, c = divmod(clayers.index(li), ncols)
-                h, l = axes[r, c].get_legend_handles_labels()
-                if h:
-                    fig.legend(h, l, loc="upper right", fontsize=8, markerscale=2)
-                break
-        fig.suptitle(f"{method} | {short_model} | {task} | colored by agent", fontsize=12)
-        fig.tight_layout(rect=[0, 0, 0.95, 0.97])
+            row, col = divmod(i, ncols)
+            axes[row][col].set_visible(False)
+
+        # Shared legend (top-right of figure)
+        legend_handles = [
+            Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor=agent_colors[a], markersize=5, label=a)
+            for a in agents_sorted
+        ]
+        fig.legend(handles=legend_handles, loc="upper right",
+                   fontsize=7, framealpha=0.8)
+
+        fig.suptitle(
+            f"{method} | {short_model} | {task} | per-layer PCA | colored by agent",
+            fontsize=10,
+        )
+        fig.tight_layout(rect=[0, 0, 0.90, 0.97])
+
         suffix = f"_part{ci + 1:02d}" if len(chunks) > 1 else ""
         fname = f"{prefix}_layerwise_pca{suffix}.png"
         fpath = os.path.join(out_dir, fname)
         fig.savefig(fpath, dpi=150, bbox_inches="tight")
         plt.close(fig)
         saved_files.append(fname)
-        print(f"Saved: {fpath}")
+        print(f"Saved figure: {fpath}")
 
-    meta = {
-        "method": method, "model": model_name, "task": task, "seed": seed,
-        "latent_steps": latent_steps, "max_samples": max_samples,
-        "num_layers": num_layers,
-        "per_layer_sample_counts": {str(k): len(v) for k, v in sampled.items()},
-        "agent_color_mapping": {n: [round(x, 4) for x in agent_colors[n][:3]] for n in agents_sorted},
-        "sampling_policy": "balanced across agents, uniform random within each agent",
-        "figures_split": len(chunks) > 1, "figure_files": saved_files,
-        "pca_chunk_size": pca_chunk_size,
-    }
-    meta_path = os.path.join(out_dir, f"{prefix}_layerwise_pca_meta.json")
-    with open(meta_path, "w") as f:
-        json.dump(meta, f, indent=2, ensure_ascii=False)
-    print(f"Saved: {meta_path}")
-    return saved_files, meta_path
+    return saved_files, txt_path
