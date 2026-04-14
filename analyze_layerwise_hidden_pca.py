@@ -56,6 +56,10 @@ def build_parser():
     p.add_argument("--split", type=str, default="test")
     p.add_argument("--think", action="store_true")
 
+    # text_mas-specific args  ← FIX: was missing, caused AttributeError
+    p.add_argument("--text_mas_context_length", type=int, default=-1,
+                   help="TextMAS context length limit in characters (-1 = no limit)")
+
     # vLLM compat (parsed but unused; analysis uses HF backend)
     p.add_argument("--use_vllm", action="store_true")
     p.add_argument("--tensor_parallel_size", type=int, default=1)
@@ -161,14 +165,14 @@ def main():
         collector, args.max_hidden_samples_per_layer,
         args.max_hidden_samples_last_layer, args.seed)
 
-    files, meta_path = run_pca_and_plot(
+    saved_files, meta_path = run_pca_and_plot(
         sampled=sampled, num_layers=num_layers,
         method=args.method, model_name=args.model_name, task=args.task,
         seed=args.seed, latent_steps=args.latent_steps,
         max_samples=len(dataset), out_dir=args.out_dir,
         pca_chunk_size=args.pca_chunk_size)
 
-    print(f"\nDone. {len(files)} figure(s) + metadata -> {args.out_dir}/")
+    print(f"\nDone. {len(saved_files)} figure(s) + metadata -> {args.out_dir}/")
     print(f"Accuracy: {correct}/{total} = {acc:.4f}")
 
 
