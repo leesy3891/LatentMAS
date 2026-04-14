@@ -56,6 +56,12 @@ def build_parser():
     p.add_argument("--split", type=str, default="test")
     p.add_argument("--think", action="store_true")
 
+    # latent_mas position freeze (must match run.py for consistency)
+    p.add_argument("--latent_freeze_position_after_step", type=int, default=-1,
+                   help="Latent step index from which RoPE position is frozen (-1 = disabled)")
+    p.add_argument("--latent_frozen_position_id", type=int, default=3,
+                   help="The fixed RoPE position id used when freeze is active")
+
     # text_mas-specific args  ← FIX: was missing, caused AttributeError
     p.add_argument("--text_mas_context_length", type=int, default=-1,
                    help="TextMAS context length limit in characters (-1 = no limit)")
