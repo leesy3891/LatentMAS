@@ -11,6 +11,11 @@ try:
 except ImportError:
     _HAS_VLLM = False
 
+try:
+    from transformers.cache_utils import Cache as _HFCache
+except ImportError:
+    _HFCache = None
+
 
 def _ensure_pad_token(tokenizer: AutoTokenizer) -> None:
     if tokenizer.pad_token_id is None:
@@ -25,6 +30,36 @@ def _past_length(past_key_values: Optional[Tuple]) -> int:
         return 0
     k = past_key_values[0][0]
     return k.shape[-2]
+
+
+def extract_last_keys_per_layer(past_key_values) -> List[torch.Tensor]:
+    """Per-layer last-position key vector, on CPU fp16, shape [B, num_kv_heads * head_dim].
+
+    Returns one tensor per transformer layer (no embedding entry).
+    Works with both legacy tuple cache and HuggingFace ``Cache`` objects.
+    """
+    if past_key_values is None:
+        return []
+    if _HFCache is not None and isinstance(past_key_values, _HFCache):
+        legacy = past_key_values.to_legacy_cache()
+    else:
+        legacy = past_key_values
+
+    out: List[torch.Tensor] = []
+    for layer_kv in legacy:
+        if isinstance(layer_kv, (tuple, list)):
+            k = layer_kv[0]
+        elif torch.is_tensor(layer_kv):
+            k = layer_kv  # fallback (some custom caches expose key only)
+        else:
+            continue
+        # k: [B, num_kv_heads, seq_len, head_dim]
+        if k.dim() != 4:
+            continue
+        last_k = k[:, :, -1, :]                 # [B, num_kv_heads, head_dim]
+        flat = last_k.reshape(last_k.shape[0], -1).contiguous()
+        out.append(flat.detach().cpu().to(torch.float16))
+    return out
 
 
 class ModelWrapper:
@@ -295,15 +330,20 @@ class ModelWrapper:
         *,
         latent_steps: int,
         past_key_values: Optional[Tuple] = None,
-        collect_latent_hiddens: bool = False,
+        collect_latent_top_k: Optional[int] = None,
     ) -> Tuple:
         """Latent recurrence forward.
 
-        When *collect_latent_hiddens* is True the return value is
-        ``(past, latent_hiddens_list)`` where latent_hiddens_list is a list of
-        [B, D] tensors (one per latent step, on CPU fp16) – the last-layer
-        hidden state **before** realignment at each step.
-        When False (default) returns ``past`` only, preserving backward compat.
+        When *collect_latent_top_k* is an int ``k`` (e.g. 5) the return value is
+        ``(past, latent_top_k_all)`` where latent_top_k_all is a list of length
+        ``latent_steps``; each element is a list of length B, each a list of k
+        ``(token_text, probability)`` tuples.
+
+        The top-k projection happens **on-device** inside the latent loop – only
+        the small ``[B, k]`` result is moved to CPU, so memory is O(B*k) not
+        O(B*D*latent_steps).
+
+        When None (default) returns ``past`` only, preserving backward compat.
         """
         if input_ids.dim() != 2:
             raise ValueError("input_ids must be 2D with shape [batch, seq_len]")
@@ -341,13 +381,14 @@ class ModelWrapper:
         latent_vecs_all: List[torch.Tensor] = []
         latent_vecs_all.append(e_t.detach().clone())
 
-        latent_hiddens_cpu: List[torch.Tensor] = []  # collected only when requested
+        latent_top_k_all: List[List[List[Tuple[str, float]]]] = []
 
         for step in range(latent_steps):
 
-            # Collect hidden *before* realignment (raw last-layer output)
-            if collect_latent_hiddens:
-                latent_hiddens_cpu.append(last_hidden.detach().cpu().to(torch.float16))
+            # Top-k on-device projection (before realignment)
+            if collect_latent_top_k is not None:
+                top_k_rec = self._latent_top_k_from_hidden(last_hidden, k=collect_latent_top_k)
+                latent_top_k_all.append(top_k_rec)
 
             source_model = self.HF_model if hasattr(self, "HF_model") else self.model
             latent_vec = self._apply_latent_realignment(last_hidden, source_model)
@@ -383,8 +424,8 @@ class ModelWrapper:
             past = outputs.past_key_values
             last_hidden = outputs.hidden_states[-1][:, -1, :]
 
-        if collect_latent_hiddens:
-            return past, latent_hiddens_cpu
+        if collect_latent_top_k is not None:
+            return past, latent_top_k_all
         return past
     
     @torch.no_grad()
@@ -395,7 +436,7 @@ class ModelWrapper:
         *,
         latent_steps: int,
         past_key_values: Optional[Tuple] = None,
-        collect_latent_hiddens: bool = False,
+        collect_latent_top_k: Optional[int] = None,
     ) -> Tuple:
         if input_ids.dim() != 2:
             raise ValueError("input_ids must be 2D with shape [batch, seq_len]")
@@ -426,13 +467,14 @@ class ModelWrapper:
         curr_output_embedding = [] 
         curr_output_embedding.append(outputs.hidden_states[0])  # input embedding
         
-        latent_hiddens_cpu: List[torch.Tensor] = []  # collected only when requested
+        latent_top_k_all: List[List[List[Tuple[str, float]]]] = []
         
         for step_idx in range(latent_steps):
 
-            # Collect hidden *before* realignment (raw last-layer output)
-            if collect_latent_hiddens:
-                latent_hiddens_cpu.append(last_hidden.detach().cpu().to(torch.float16))
+            # Top-k on-device projection (before realignment)
+            if collect_latent_top_k is not None:
+                top_k_rec = self._latent_top_k_from_hidden(last_hidden, k=collect_latent_top_k)
+                latent_top_k_all.append(top_k_rec)
 
             source_model = self.HF_model if hasattr(self, "HF_model") else self.model
             latent_vec = self._apply_latent_realignment(last_hidden, source_model)
@@ -464,8 +506,8 @@ class ModelWrapper:
             curr_output_embedding.append(latent_embed.detach())
 
         combined_emb = torch.cat(curr_output_embedding, dim=1)  # Output input embeddings
-        if collect_latent_hiddens:
-            return past, combined_emb, latent_hiddens_cpu
+        if collect_latent_top_k is not None:
+            return past, combined_emb, latent_top_k_all
         return past, combined_emb
 
     # ----------------------------------------------------------------
@@ -565,15 +607,11 @@ class ModelWrapper:
         return logits.argmax(dim=-1)
 
     @torch.no_grad()
-    def lm_head_top_k(self, hidden: torch.Tensor, k: int = 5) -> List[List[Tuple[str, float]]]:
-        """Project hidden state through lm_head and return top-k tokens with probs.
+    def _latent_top_k_from_hidden(self, hidden_gpu: torch.Tensor, k: int = 5) -> List[List[Tuple[str, float]]]:
+        """Project hidden state through lm_head and return top-k (token_text, prob).
 
-        Args:
-            hidden: [B, D] tensor (CPU fp16 or GPU)
-            k: number of top tokens
-
-        Returns:
-            List (per batch) of list of (token_text, probability) tuples.
+        Assumes hidden_gpu is already on the correct device (same as the model/lm_head
+        producing it).  Only the tiny top-k result is moved to CPU.
         """
         src_model = self.HF_model if hasattr(self, "HF_model") else self.model
         lm_head = src_model.get_output_embeddings()
@@ -582,21 +620,114 @@ class ModelWrapper:
         if lm_head is None:
             raise RuntimeError("Cannot find lm_head for top-k projection")
 
-        device = next(lm_head.parameters()).device
-        dtype = next(lm_head.parameters()).dtype
-        h = hidden.to(device=device, dtype=dtype)
-        logits = lm_head(h)  # [B, V]
-        probs = torch.softmax(logits.float(), dim=-1)  # float32 for precision
-        topk_probs, topk_ids = torch.topk(probs, k, dim=-1)  # [B, k]
+        lm_weight = lm_head.weight
+        h = hidden_gpu.to(device=lm_weight.device, dtype=lm_weight.dtype)
+        logits = lm_head(h)                          # [B, V] on GPU
+        probs = torch.softmax(logits.float(), dim=-1)
+        top_probs, top_ids = torch.topk(probs, k, dim=-1)  # [B, k]
+        top_ids_cpu = top_ids.cpu().tolist()
+        top_probs_cpu = top_probs.cpu().tolist()
+        # Free large intermediate tensors
+        del logits, probs, top_probs, top_ids
 
-        results = []
-        for b in range(topk_ids.shape[0]):
-            tokens_and_probs = []
+        results: List[List[Tuple[str, float]]] = []
+        for b in range(len(top_ids_cpu)):
+            row = []
             for j in range(k):
-                tid = topk_ids[b, j].item()
-                prob = topk_probs[b, j].item()
-                tok_text = self.tokenizer.decode([tid])
-                tokens_and_probs.append((tok_text, prob))
-            results.append(tokens_and_probs)
+                tok_text = self.tokenizer.decode([top_ids_cpu[b][j]])
+                row.append((tok_text, top_probs_cpu[b][j]))
+            results.append(row)
+        return results
+
+    @torch.no_grad()
+    def lm_head_top_k(self, hidden: torch.Tensor, k: int = 5) -> List[List[Tuple[str, float]]]:
+        """Back-compat public wrapper – same as _latent_top_k_from_hidden but
+        accepts CPU tensors too (for external callers).
+        """
+        return self._latent_top_k_from_hidden(hidden, k=k)
+
+    @torch.no_grad()
+    def prefill_top_k(
+        self,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        *,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        past_key_values: Optional[Tuple] = None,
+        k: int = 5,
+        use_hf_model: bool = False,
+    ) -> List[List[Tuple[str, float]]]:
+        """Single forward pass to extract top-k at the last real position.
+
+        Used to log what the model would predict right *before* decoding begins.
+
+        Either ``input_ids`` + ``attention_mask`` OR ``inputs_embeds`` must be
+        provided. The ``attention_mask`` (when supplied with input_ids) is the
+        mask over the **new** tokens only; any past_key_values length is
+        handled internally. The result is a list of length B, each a list of k
+        ``(token_text, probability)`` tuples.
+        """
+        model = self.HF_model if (use_hf_model and hasattr(self, "HF_model")) else self.model
+        device = next(model.parameters()).device
+
+        if input_ids is not None:
+            input_ids = input_ids.to(device)
+            if attention_mask is None:
+                attention_mask = torch.ones_like(input_ids, device=device)
+            else:
+                attention_mask = attention_mask.to(device)
+            seq_len = input_ids.shape[1]
+        else:
+            if inputs_embeds is None:
+                raise ValueError("prefill_top_k: must provide either input_ids or inputs_embeds")
+            inputs_embeds = inputs_embeds.to(device)
+            if attention_mask is None:
+                attention_mask = torch.ones(inputs_embeds.shape[:2], dtype=torch.long, device=device)
+            else:
+                attention_mask = attention_mask.to(device)
+            seq_len = inputs_embeds.shape[1]
+
+        full_mask = attention_mask
+        if past_key_values is not None:
+            past_len = _past_length(past_key_values)
+            if past_len > 0:
+                past_mask = torch.ones(
+                    (attention_mask.shape[0], past_len),
+                    dtype=attention_mask.dtype,
+                    device=device,
+                )
+                full_mask = torch.cat([past_mask, attention_mask], dim=-1)
+
+        fwd_kwargs = dict(
+            attention_mask=full_mask,
+            past_key_values=past_key_values,
+            use_cache=False,
+            return_dict=True,
+        )
+        if input_ids is not None:
+            fwd_kwargs["input_ids"] = input_ids
+        else:
+            fwd_kwargs["inputs_embeds"] = inputs_embeds
+        outputs = model(**fwd_kwargs)
+
+        # Find the last real position per sample (works for any padding side)
+        attn_int = attention_mask.to(torch.int)
+        last_idx = seq_len - 1 - torch.flip(attn_int, dims=[1]).argmax(dim=1)  # [B]
+        batch_idx = torch.arange(attention_mask.shape[0], device=device)
+        last_logits = outputs.logits[batch_idx, last_idx, :]  # [B, V]
+
+        probs = torch.softmax(last_logits.float(), dim=-1)
+        top_probs, top_ids = torch.topk(probs, k, dim=-1)
+        top_ids_cpu = top_ids.cpu().tolist()
+        top_probs_cpu = top_probs.cpu().tolist()
+        del outputs, last_logits, probs, top_probs, top_ids
+
+        results: List[List[Tuple[str, float]]] = []
+        for b in range(len(top_ids_cpu)):
+            row = []
+            for j in range(k):
+                tok_text = self.tokenizer.decode([top_ids_cpu[b][j]])
+                row.append((tok_text, top_probs_cpu[b][j]))
+            results.append(row)
         return results
 
