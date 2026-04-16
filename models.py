@@ -69,6 +69,7 @@ class ModelWrapper:
 
         # fallback: normal transformers path
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        self.tokenizer.padding_side = "left"
         _ensure_pad_token(self.tokenizer)
         with torch.no_grad():
             self.model = AutoModelForCausalLM.from_pretrained(
