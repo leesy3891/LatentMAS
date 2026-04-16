@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from sklearn.decomposition import PCA
 
-from models import ModelWrapper, _past_length
+from models import ModelWrapper, _past_length, extract_last_keys_per_layer
 from prompts import (
     build_agent_messages_hierarchical_text_mas,
     build_agent_messages_sequential_text_mas,
@@ -151,7 +151,8 @@ def _preselect_steps(max_steps: int, budget: int, seed: int) -> Set[int]:
 
 
 def _decode_loop(model, past_kv, first_logits, max_tokens, temperature, top_p,
-                 collector, case_idx, agent_name, collect_steps):
+                 collector, case_idx, agent_name, collect_steps,
+                 key_collector=None):
     """Full decode loop. Collects hidden states only at steps in collect_steps.
     Returns (generated_ids, past_kv).
     """
@@ -170,6 +171,9 @@ def _decode_loop(model, past_kv, first_logits, max_tokens, temperature, top_p,
             ntok, past_kv, layer_h = model.decode_step_collect_layerwise(
                 cur, smask, past_kv, temperature=temperature, top_p=top_p)
             collector.add_all_layers(layer_h, case_idx, agent_name, ds + 1, "decode")
+            if key_collector is not None:
+                layer_keys = extract_last_keys_per_layer(past_kv)
+                key_collector.add_all_layers(layer_keys, case_idx, agent_name, ds + 1, "decode")
         else:
             ntok, past_kv = model.decode_step_simple(
                 cur, smask, past_kv, temperature=temperature, top_p=top_p)
@@ -194,6 +198,21 @@ def _remove_outliers(vecs_np: np.ndarray, n_remove: int = 5):
     n = len(vecs_np)
     if n <= n_remove + 4:
         return vecs_np, list(range(n))
+
+    # Filter out rows containing NaN/inf before computing centroid
+    finite_mask = np.isfinite(vecs_np).all(axis=1)
+    if not finite_mask.all():
+        finite_idx = np.where(finite_mask)[0]
+        if len(finite_idx) <= n_remove + 4:
+            return vecs_np[finite_idx], finite_idx.tolist()
+        vecs_finite = vecs_np[finite_idx]
+        centroid = vecs_finite.mean(axis=0)
+        dists = np.linalg.norm(vecs_finite - centroid, axis=1)
+        outlier_set = set(np.argsort(dists)[-n_remove:].tolist())
+        keep_local = [i for i in range(len(finite_idx)) if i not in outlier_set]
+        keep = [int(finite_idx[i]) for i in keep_local]
+        return vecs_np[keep], keep
+
     centroid = vecs_np.mean(axis=0)
     dists = np.linalg.norm(vecs_np - centroid, axis=1)
     outlier_set = set(np.argsort(dists)[-n_remove:].tolist())
@@ -308,9 +327,11 @@ def compute_entropy_per_layer(
             entropies = []
             for rec in agent_recs:
                 h = rec["vec"].float().numpy()   # [D]
+                if not np.isfinite(h).all():
+                    continue
                 sq = h ** 2
                 s = sq.sum()
-                if s < 1e-12:
+                if not np.isfinite(s) or s < 1e-12:
                     continue
                 p = sq / s
                 ent = float(-np.sum(p * np.log(p + 1e-12)))
@@ -469,9 +490,16 @@ def plot_entropy_and_kl(
 # ============================================================
 
 def collect_latent_mas_states(model, agents, items, args, collector,
-                              max_decode_analysis_steps=80):
+                              max_decode_analysis_steps=80,
+                              key_collector=None):
     """Non-judger: prefill + latent recurrence (all steps collected).
     Judger: prefill + full text decode (sampled hidden collection).
+
+    If ``key_collector`` is provided (a LayerwiseHiddenCollector with
+    ``num_layers = num_hidden_layers``), the last-position **key cache** of
+    every transformer layer is also collected at the same (case, agent, step)
+    points.
+
     Returns list of evaluation result dicts.
     """
     from tqdm import tqdm
@@ -506,6 +534,9 @@ def collect_latent_mas_states(model, agents, items, args, collector,
                 past_kv, layer_h, last_gpu = model.forward_collect_layerwise(
                     input_ids=ids, attention_mask=mask, past_key_values=past_kv)
                 collector.add_all_layers(layer_h, case_idx, agent.name, 0, "prefill")
+                if key_collector is not None:
+                    layer_keys = extract_last_keys_per_layer(past_kv)
+                    key_collector.add_all_layers(layer_keys, case_idx, agent.name, 0, "prefill")
 
                 # Latent recurrence
                 for step in range(args.latent_steps):
@@ -520,18 +551,25 @@ def collect_latent_mas_states(model, agents, items, args, collector,
                         inputs_embeds=latent_emb, attention_mask=lmask,
                         past_key_values=past_kv, position_ids=pos_ids)
                     collector.add_all_layers(layer_h, case_idx, agent.name, step + 1, "latent")
+                    if key_collector is not None:
+                        layer_keys = extract_last_keys_per_layer(past_kv)
+                        key_collector.add_all_layers(layer_keys, case_idx, agent.name, step + 1, "latent")
             else:
                 # Judger: prefill + full decode
                 pkv_j, layer_h, logits0, _ = _prefill_with_logits(
                     model, ids, mask, past_key_values=past_kv)
                 collector.add_all_layers(layer_h, case_idx, agent.name, 0, "prefill")
+                if key_collector is not None:
+                    layer_keys = extract_last_keys_per_layer(pkv_j)
+                    key_collector.add_all_layers(layer_keys, case_idx, agent.name, 0, "prefill")
 
                 collect_steps = _preselect_steps(
                     args.max_new_tokens, max_decode_analysis_steps, args.seed + case_idx)
                 gen_ids, pkv_j = _decode_loop(
                     model, pkv_j, logits0, args.max_new_tokens,
                     args.temperature, args.top_p,
-                    collector, case_idx, agent.name, collect_steps)
+                    collector, case_idx, agent.name, collect_steps,
+                    key_collector=key_collector)
 
                 judger_text = model.tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
                 del pkv_j
@@ -551,8 +589,13 @@ def collect_latent_mas_states(model, agents, items, args, collector,
 # ============================================================
 
 def collect_text_mas_states(model, agents, items, args, collector,
-                            max_decode_analysis_steps=80):
+                            max_decode_analysis_steps=80,
+                            key_collector=None):
     """All agents do full decode. Hidden states collected at sampled steps.
+
+    If ``key_collector`` is provided, the per-layer last-position **key cache**
+    is also collected at the same (case, agent, step) points.
+
     Returns list of evaluation result dicts.
     """
     from tqdm import tqdm
@@ -589,6 +632,9 @@ def collect_text_mas_states(model, agents, items, args, collector,
             # Prefill
             pkv, layer_h, logits0, _ = _prefill_with_logits(model, ids, mask)
             collector.add_all_layers(layer_h, case_idx, agent.name, 0, "prefill")
+            if key_collector is not None:
+                layer_keys = extract_last_keys_per_layer(pkv)
+                key_collector.add_all_layers(layer_keys, case_idx, agent.name, 0, "prefill")
 
             # Full decode with sampled hidden collection
             collect_steps = _preselect_steps(
@@ -597,7 +643,8 @@ def collect_text_mas_states(model, agents, items, args, collector,
             gen_ids, pkv = _decode_loop(
                 model, pkv, logits0, args.max_new_tokens,
                 args.temperature, args.top_p,
-                collector, case_idx, agent.name, collect_steps)
+                collector, case_idx, agent.name, collect_steps,
+                key_collector=key_collector)
 
             text_out = model.tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
 
@@ -655,6 +702,18 @@ def run_pca_and_plot(sampled, num_layers, method, model_name, task, seed,
             continue
 
         vecs = torch.stack([r["vec"].float() for r in recs]).numpy()  # [N, D]
+
+        # Drop records whose vectors contain NaN/inf (fp16 overflow)
+        finite_mask = np.isfinite(vecs).all(axis=1)
+        if not finite_mask.all():
+            finite_idx = np.where(finite_mask)[0]
+            vecs = vecs[finite_idx]
+            recs = [recs[i] for i in finite_idx]
+            if len(recs) < 4:
+                pca_objects[li] = None
+                pca_coords[li] = (None, recs)
+                vecs_clean_np[li] = None
+                continue
 
         # Outlier removal (top-5 by L2 from centroid)
         vecs_c, keep = _remove_outliers(vecs, n_remove=5)
