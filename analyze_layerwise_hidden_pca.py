@@ -83,6 +83,8 @@ def build_parser():
     p.add_argument("--max_hidden_samples_last_layer", type=int, default=8000)
     p.add_argument("--pca_chunk_size", type=int, default=16)
     p.add_argument("--save_hidden_cache", action="store_true")
+    p.add_argument("--collect_key_cache", action="store_true",
+                   help="Also collect per-layer last-position key cache and produce a parallel PCA plot.")
 
     return p
 
@@ -125,21 +127,26 @@ def main():
     # Load model (HF backend only)
     model = ModelWrapper(args.model_name, device, use_vllm=False, args=args)
     num_layers = model.model.config.num_hidden_layers + 1
-    print(f"Model loaded. {num_layers} layers (incl. embedding output).")
+    num_kv_layers = model.model.config.num_hidden_layers  # key cache: no embedding entry
+    print(f"Model loaded. {num_layers} layers (incl. embedding output). "
+          f"{num_kv_layers} transformer layers (key cache).")
 
     # Collect hidden states + run full inference
     collector = LayerwiseHiddenCollector(num_layers)
+    key_collector = LayerwiseHiddenCollector(num_kv_layers) if args.collect_key_cache else None
     agents = default_agents()
     t0 = time.time()
 
     if args.method == "latent_mas":
         eval_results = collect_latent_mas_states(
             model, agents, dataset, args, collector,
-            max_decode_analysis_steps=args.max_decode_analysis_steps)
+            max_decode_analysis_steps=args.max_decode_analysis_steps,
+            key_collector=key_collector)
     else:
         eval_results = collect_text_mas_states(
             model, agents, dataset, args, collector,
-            max_decode_analysis_steps=args.max_decode_analysis_steps)
+            max_decode_analysis_steps=args.max_decode_analysis_steps,
+            key_collector=key_collector)
 
     elapsed = time.time() - t0
 
@@ -148,7 +155,9 @@ def main():
     correct = sum(1 for r in eval_results if r["correct"])
     acc = correct / total if total > 0 else 0.0
     print(f"\nCollection done in {elapsed:.1f}s")
-    print(f"Total records (all layers): {collector.total_records()}")
+    print(f"Total records (hidden, all layers): {collector.total_records()}")
+    if key_collector is not None:
+        print(f"Total records (key cache, all layers): {key_collector.total_records()}")
     print(json.dumps({
         "method": args.method, "model": args.model_name, "task": args.task,
         "seed": args.seed, "max_samples": total,
@@ -165,8 +174,14 @@ def main():
                                   f"{args.task}_{short_model}_{args.method}_hidden_cache.pt")
         torch.save({li: collector.buffers[li] for li in range(num_layers)}, cache_path)
         print(f"Hidden cache saved: {cache_path}")
+        if key_collector is not None:
+            kc_path = os.path.join(
+                args.out_dir,
+                f"{args.task}_{short_model}_{args.method}_keycache_cache.pt")
+            torch.save({li: key_collector.buffers[li] for li in range(num_kv_layers)}, kc_path)
+            print(f"Key-cache cache saved: {kc_path}")
 
-    # Sample + PCA + Plot
+    # Sample + PCA + Plot (residual stream hidden states)
     sampled = sample_collector(
         collector, args.max_hidden_samples_per_layer,
         args.max_hidden_samples_last_layer, args.seed)
@@ -177,6 +192,20 @@ def main():
         seed=args.seed, latent_steps=args.latent_steps,
         max_samples=len(dataset), out_dir=args.out_dir,
         pca_chunk_size=args.pca_chunk_size)
+
+    # Sample + PCA + Plot (KEY CACHE)
+    if key_collector is not None:
+        key_sampled = sample_collector(
+            key_collector, args.max_hidden_samples_per_layer,
+            args.max_hidden_samples_last_layer, args.seed)
+        key_saved_files, key_meta_path = run_pca_and_plot(
+            sampled=key_sampled, num_layers=num_kv_layers,
+            method=f"{args.method}_keycache",
+            model_name=args.model_name, task=args.task,
+            seed=args.seed, latent_steps=args.latent_steps,
+            max_samples=len(dataset), out_dir=args.out_dir,
+            pca_chunk_size=args.pca_chunk_size)
+        print(f"Key-cache figures: {len(key_saved_files)}  meta -> {key_meta_path}")
 
     print(f"\nDone. {len(saved_files)} figure(s) + metadata -> {args.out_dir}/")
     print(f"Accuracy: {correct}/{total} = {acc:.4f}")
