@@ -1,8 +1,7 @@
 from typing import Dict, List
 
 from . import default_agents
-from models import ModelWrapper
-# from prompts import build_agent_messages, build_agent_messages_v6, build_agent_messages_v6_text_mas
+from models import ModelWrapper, _flush_gpu
 from prompts import build_agent_messages_hierarchical_text_mas, build_agent_messages_sequential_text_mas
 from utils import extract_gsm8k_answer, normalize_answer, extract_markdown_python_block, run_with_timeout
 import argparse
@@ -29,6 +28,7 @@ class TextMASMethod:
         self.args = args
         self.method_name = "text_mas"
         self.task = args.task
+        self.memory_opt = bool(getattr(args, "memory_opt", False)) if args else False
         
     def run_batch(self, items: List[Dict]) -> List[Dict]:
         if len(items) > self.generate_bs:
@@ -123,7 +123,11 @@ class TextMASMethod:
                         "output": text_out,
                     }
                 )
-            # import pdb; pdb.set_trace()
+
+            # Free tensors between agents
+            del input_ids, attention_mask
+            if self.memory_opt:
+                _flush_gpu()
 
         results: List[Dict] = []
         for idx, item in enumerate(items):
