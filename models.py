@@ -1,4 +1,5 @@
 import os
+import gc
 import csv
 import torch
 import matplotlib.pyplot as plt
@@ -27,6 +28,14 @@ def _past_length(past_key_values: Optional[Tuple]) -> int:
     return k.shape[-2]
 
 
+def _flush_gpu():
+    """Aggressively free GPU memory."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+
 class ModelWrapper:
     def __init__(self, model_name: str, device: torch.device, use_vllm: bool = False, args = None):
         self.model_name = model_name
@@ -36,6 +45,7 @@ class ModelWrapper:
         self.latent_space_realign = bool(getattr(args, "latent_space_realign", False)) if args else False
         self._latent_realign_matrices: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
         self.args = args
+        self.memory_opt = bool(getattr(args, "memory_opt", False)) if args else False
 
         # for ablation
         self.pre_aligned = None
@@ -43,13 +53,28 @@ class ModelWrapper:
         if self.use_vllm:
             
             tp_size = max(1, int(getattr(args, "tensor_parallel_size", 1)))
-            gpu_util = float(getattr(args, "gpu_memory_utilization", 0.9))
+            # Lower default GPU util when memory_opt is on
+            default_util = 0.70 if self.memory_opt else 0.9
+            gpu_util = float(getattr(args, "gpu_memory_utilization", default_util))
             
             print(f"[vLLM] Using vLLM backend for model {model_name}")
+            vllm_kwargs = dict(
+                model=model_name,
+                tensor_parallel_size=tp_size,
+                gpu_memory_utilization=gpu_util,
+                dtype="bfloat16",
+            )
+            # memory_opt: enforce swap space & lower max_model_len to cap KV cache
+            if self.memory_opt:
+                vllm_kwargs["max_model_len"] = int(getattr(args, "max_model_len", 8192))
+                vllm_kwargs["swap_space"] = int(getattr(args, "swap_space", 8))
+                vllm_kwargs["enforce_eager"] = True  # skip cuda graph to save memory
+
             if args.enable_prefix_caching and args.method == "latent_mas": 
-                self.vllm_engine = LLM(model=model_name, tensor_parallel_size=tp_size, gpu_memory_utilization=gpu_util, enable_prefix_caching=True, enable_prompt_embeds=True)
-            else:
-                self.vllm_engine = LLM(model=model_name, tensor_parallel_size=tp_size, gpu_memory_utilization=gpu_util)
+                vllm_kwargs["enable_prefix_caching"] = True
+                vllm_kwargs["enable_prompt_embeds"] = True
+            
+            self.vllm_engine = LLM(**vllm_kwargs)
             self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
             
             use_second_hf = bool(getattr(args, "use_second_HF_model", False)) if args else False
@@ -57,19 +82,20 @@ class ModelWrapper:
                 self.HF_model = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     torch_dtype=(torch.bfloat16 if torch.cuda.is_available() else torch.float32),
-                ).to(args.device2).eval() 
+                ).to(args.device2).eval()
                 self.embedding_layer = self.HF_model.get_input_embeddings()
                 self.HF_device = args.device2
-                # if self.latent_space_realign:
                 self._ensure_latent_realign_matrix(self.HF_model, torch.device(self.HF_device), args)
             elif self.latent_space_realign:
                 raise ValueError("latent_space_realign requires --use_second_HF_model when using vLLM backend.")
             _ensure_pad_token(self.tokenizer)
+            _flush_gpu()
             return  # skip loading transformers model
 
         # fallback: normal transformers path
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
         _ensure_pad_token(self.tokenizer)
+
         with torch.no_grad():
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_name,
@@ -78,11 +104,13 @@ class ModelWrapper:
         if len(self.tokenizer) != self.model.get_input_embeddings().weight.shape[0]:
             self.model.resize_token_embeddings(len(self.tokenizer))
         self.model.to(device)
+
         self.model.eval()
         if hasattr(self.model.config, "use_cache"):
             self.model.config.use_cache = True
         if self.latent_space_realign:
             self._ensure_latent_realign_matrix(self.model, self.device, args)
+        _flush_gpu()
 
     def render_chat(self, messages: List[Dict], add_generation_prompt: bool = True) -> str:
         tpl = getattr(self.tokenizer, "chat_template", None)
@@ -167,20 +195,29 @@ class ModelWrapper:
             or not hasattr(output_embeds, "weight")
         ):
             raise RuntimeError("Cannot build latent realignment matrix: embedding weights not accessible.")
-        input_weight = input_embeds.weight.detach().to(device=device, dtype=torch.float32)
-        output_weight = output_embeds.weight.detach().to(device=device, dtype=torch.float32)
+
+        # Build on CPU to avoid GPU memory spike, then move result
+        input_weight = input_embeds.weight.detach().to(device="cpu", dtype=torch.float32)
+        output_weight = output_embeds.weight.detach().to(device="cpu", dtype=torch.float32)
         gram = torch.matmul(output_weight.T, output_weight)
-        reg = 1e-5 * torch.eye(gram.shape[0], device=gram.device, dtype=gram.dtype)
+        reg = 1e-5 * torch.eye(gram.shape[0], device="cpu", dtype=gram.dtype)
         gram = gram + reg
         rhs = torch.matmul(output_weight.T, input_weight)
         realign_matrix = torch.linalg.solve(gram, rhs)
         target_norm = input_weight.norm(dim=1).mean().detach()
 
+        # Free large intermediates
+        del input_weight, output_weight, gram, rhs
+        _flush_gpu()
+
         if self.args.latent_space_realign:
             pass
         else:
-            # keep the matrix, for further normalization
-            realign_matrix = torch.eye(realign_matrix.shape[0], device=realign_matrix.device, dtype=realign_matrix.dtype)
+            realign_matrix = torch.eye(realign_matrix.shape[0], device="cpu", dtype=realign_matrix.dtype)
+
+        # Move to target device
+        realign_matrix = realign_matrix.to(device)
+        target_norm = target_norm.to(device)
 
         return realign_matrix, target_norm
 
@@ -264,7 +301,11 @@ class ModelWrapper:
             generated_ids = sequences[idx, length:]
             text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
             generations.append(text)
-        return generations, outputs.past_key_values
+        past_kv = outputs.past_key_values
+        del outputs
+        if self.memory_opt:
+            _flush_gpu()
+        return generations, past_kv
 
     def tokenize_text(self, text: str) -> torch.Tensor:
         return self.tokenizer(
@@ -318,6 +359,11 @@ class ModelWrapper:
         latent_vecs_all: List[torch.Tensor] = []
         latent_vecs_all.append(e_t.detach().clone())
 
+        # Free hidden_states early
+        del outputs
+        if self.memory_opt:
+            _flush_gpu()
+
         for step in range(latent_steps):
 
             source_model = self.HF_model if hasattr(self, "HF_model") else self.model
@@ -336,7 +382,7 @@ class ModelWrapper:
                 dtype=torch.long,
                 device=self.device,
             )
-            outputs = self.model(
+            step_out = self.model(
                 inputs_embeds=latent_embed,
                 attention_mask=latent_mask,
                 past_key_values=past,
@@ -344,8 +390,11 @@ class ModelWrapper:
                 output_hidden_states=True,
                 return_dict=True,
             )
-            past = outputs.past_key_values
-            last_hidden = outputs.hidden_states[-1][:, -1, :]
+            past = step_out.past_key_values
+            last_hidden = step_out.hidden_states[-1][:, -1, :]
+            del step_out
+            if self.memory_opt and step % 2 == 0:
+                _flush_gpu()
 
         return past
     
@@ -387,6 +436,9 @@ class ModelWrapper:
         curr_output_embedding = [] 
         curr_output_embedding.append(outputs.hidden_states[0])  # input embedding
         
+        del outputs
+        if self.memory_opt:
+            _flush_gpu()
         
         for _ in range(latent_steps):
 
@@ -399,7 +451,7 @@ class ModelWrapper:
                 dtype=torch.long,
                 device=latent_embed.device,
             )
-            outputs = self.HF_model(
+            step_out = self.HF_model(
                 inputs_embeds=latent_embed,
                 attention_mask=latent_mask,
                 past_key_values=past,
@@ -407,10 +459,12 @@ class ModelWrapper:
                 output_hidden_states=True,
                 return_dict=True,
             )
-            past = outputs.past_key_values
-            last_hidden = outputs.hidden_states[-1][:, -1, :]
+            past = step_out.past_key_values
+            last_hidden = step_out.hidden_states[-1][:, -1, :]
+            del step_out
+            if self.memory_opt:
+                _flush_gpu()
 
             curr_output_embedding.append(latent_embed.detach())
 
         return past, torch.cat(curr_output_embedding, dim=1) # Output input embeddings
-
