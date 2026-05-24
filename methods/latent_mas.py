@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional, Tuple
 
 from . import default_agents
-from models import ModelWrapper, _past_length
+from models import ModelWrapper, _past_length, _flush_gpu
 from prompts import build_agent_message_sequential_latent_mas, build_agent_message_hierarchical_latent_mas
 from utils import extract_gsm8k_answer, normalize_answer, extract_markdown_python_block, run_with_timeout
 import torch
@@ -39,6 +39,7 @@ class LatentMASMethod:
         self.HF_device = args.device2
         self.latent_only = bool(getattr(args, "latent_only", False)) if args else False
         self.sequential_info_only = bool(getattr(args, "sequential_info_only", False)) if args else False
+        self.memory_opt = bool(getattr(args, "memory_opt", False)) if args else False
 
         if self.latent_only:
             self.sequential_info_only = True
@@ -153,6 +154,10 @@ class LatentMASMethod:
                             "output": "",
                         }
                     )
+                # Free intermediate tensors
+                del wrapped_ids, wrapped_mask
+                if self.memory_opt:
+                    _flush_gpu()
             else:
 
                 past_for_decoding = past_kv if self.latent_steps > 0 else None
@@ -197,6 +202,10 @@ class LatentMASMethod:
                             "output": final_text,
                         }
                     )
+                # Free KV cache after judger is done
+                del past_kv, past_for_decoding, judger_ids, judger_mask
+                if self.memory_opt:
+                    _flush_gpu()
 
         results: List[Dict] = []
         for idx, item in enumerate(items):
@@ -215,7 +224,6 @@ class LatentMASMethod:
                 print(f'=========================================')
                 print(f'Question {idx}')
                 print(f'error_msg: {error_msg}')
-                # print(f'=========================================')
 
             elif self.task in ["aime2024", "aime2025"]:
                 pred = normalize_answer(extract_gsm8k_answer(final_text))
@@ -334,10 +342,17 @@ class LatentMASMethod:
                             "output": "",
                         }
                     )
+                del wrapped_ids, wrapped_mask
+                if self.memory_opt:
+                    _flush_gpu()
             else:
                 
                 # A stack of [B, L_i, H]
                 past_embedding = torch.cat(embedding_record, dim=1).to(self.vllm_device)
+                # Free HF-side KV cache since we only need embeddings for vLLM
+                del past_kv
+                if self.memory_opt:
+                    _flush_gpu()
                 
                 if self.args.think:
                     judger_prompts = [f"{prompt}<think>" for prompt in prompts]
@@ -383,13 +398,11 @@ class LatentMASMethod:
                     for x in whole_prompt_emb_list
                 ])
 
-                # else:
-                    # Get full prompt embedding from cat with previous ones 
-                    # B L H B L H
-                    # whole_prompt_emb = torch.cat([past_embedding, curr_prompt_emb], dim=1)
-                
-                # pdb.set_trace()              
-                
+                # Free intermediates
+                del past_embedding, curr_prompt_emb
+                if self.memory_opt:
+                    _flush_gpu()
+
                 # Use vLLM 
                 prompt_embeds_list = [
                     {
@@ -416,6 +429,9 @@ class LatentMASMethod:
                             "output": text_out,
                         }
                     )
+                del whole_prompt_emb
+                if self.memory_opt:
+                    _flush_gpu()
 
 
         results: List[Dict] = []
