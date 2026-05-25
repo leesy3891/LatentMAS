@@ -87,6 +87,40 @@ class LogitLensRecorder:
         del hidden_states
         torch.cuda.empty_cache()
 
+    @torch.no_grad()
+    def record_from_last_token_hiddens(
+        self,
+        last_token_hiddens: List[torch.Tensor],
+        task_id: int,
+        tag: str = "",
+    ) -> None:
+        """
+        Hook으로 캡처한 layer별 마지막 토큰 hidden으로 logit lens 기록.
+        last_token_hiddens: [layer_0_h, layer_1_h, ...], 각각 [B, D] (CPU)
+        """
+        for layer_idx, h in enumerate(last_token_hiddens):
+            h_single = h[0:1].to(device=self.lm_head.weight.device, dtype=self.lm_head.weight.dtype)
+
+            logits = self.lm_head(h_single)
+            probs = F.softmax(logits, dim=-1)
+            topk_probs, topk_ids = probs.topk(self.top_k, dim=-1)
+
+            topk_probs = topk_probs[0].cpu().tolist()
+            topk_ids = topk_ids[0].cpu().tolist()
+            topk_tokens = [self.tokenizer.decode([tid]).strip() for tid in topk_ids]
+
+            row: Dict = {
+                "task_id": task_id,
+                "tag": tag,
+                "layer": layer_idx,
+            }
+            for rank in range(self.top_k):
+                row[f"top{rank+1}_token"] = topk_tokens[rank]
+                row[f"top{rank+1}_prob"] = round(topk_probs[rank], 3)
+            self.rows.append(row)
+
+        del last_token_hiddens
+
     def flush_csv(self, filename: str) -> str:
         """rows를 CSV로 저장하고 경로를 반환한다."""
         path = os.path.join(self.save_dir, filename)
@@ -202,29 +236,73 @@ class ModelWrapper:
         tag: str = "",
     ) -> None:
         """
-        generate 없이 prefill forward pass만 수행하여 logit lens 기록.
-        logit_lens가 None이면 아무것도 하지 않는다.
+        Hook 기반 logit lens: output_hidden_states=True 없이
+        각 layer의 마지막 토큰 hidden만 캡처하여 메모리를 절약한다.
+
+        output_hidden_states=True는 (num_layers × batch × seq_len × hidden_dim)을
+        모두 메모리에 보유하므로 긴 시퀀스에서 OOM을 유발한다.
+        Hook 방식은 layer당 (batch × 1 × hidden_dim)만 저장하므로
+        수 GiB → 수 MB로 감소.
         """
         if self.logit_lens is None:
             return
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids, device=self.device)
 
+        # 각 batch item별 실제 마지막 토큰 위치 (패딩 제외)
+        # attention_mask.sum(dim=1) - 1 = 마지막 non-pad 토큰 인덱스
+        last_positions = (attention_mask.sum(dim=1) - 1).long()  # [B]
+
+        # layer별 마지막 토큰 hidden을 저장할 리스트
+        captured_hiddens: List[torch.Tensor] = []
+        hooks = []
+
+        # embedding layer hook
+        embed_layer = self.model.get_input_embeddings()
+        def _embed_hook(module, input, output, positions=last_positions):
+            # output: [B, seq_len, D]
+            h = torch.stack([output[b, positions[b], :] for b in range(output.shape[0])])
+            captured_hiddens.append(h.detach().cpu())
+        hooks.append(embed_layer.register_forward_hook(_embed_hook))
+
+        # transformer layer hooks
+        # Qwen3: model.model.layers  /  LLaMA: model.model.layers
+        decoder_layers = None
+        if hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
+            decoder_layers = self.model.model.layers
+        elif hasattr(self.model, "transformer") and hasattr(self.model.transformer, "h"):
+            decoder_layers = self.model.transformer.h
+
+        if decoder_layers is not None:
+            for layer_module in decoder_layers:
+                def _layer_hook(module, input, output, positions=last_positions):
+                    # output: tuple, first element is hidden_states [B, seq_len, D]
+                    h_out = output[0] if isinstance(output, tuple) else output
+                    h = torch.stack([h_out[b, positions[b], :] for b in range(h_out.shape[0])])
+                    captured_hiddens.append(h.detach().cpu())
+                hooks.append(layer_module.register_forward_hook(_layer_hook))
+
+        # forward WITHOUT output_hidden_states — 메모리 절약 핵심
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            use_cache=False,          # 메모리 절약: cache 불필요
-            output_hidden_states=True,
+            use_cache=False,
+            output_hidden_states=False,
             return_dict=True,
         )
-        self.logit_lens.record(
-            outputs.hidden_states,
+
+        # hook 제거
+        for h in hooks:
+            h.remove()
+
+        # captured_hiddens를 logit_lens.record_from_last_token_hiddens()로 기록
+        self.logit_lens.record_from_last_token_hiddens(
+            captured_hiddens,
             task_id=task_id,
-            position_idx=-1,
             tag=tag,
         )
-        # 즉시 해제
-        del outputs
+
+        del outputs, captured_hiddens
         torch.cuda.empty_cache()
 
     # ── chat helpers (unchanged) ──
