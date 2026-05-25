@@ -40,11 +40,10 @@ class LogitLensRecorder:
     def __init__(self, tokenizer: AutoTokenizer, lm_head: torch.nn.Module,
                  top_k: int = 5, save_dir: str = "resource"):
         self.tokenizer = tokenizer
-        self.lm_head = lm_head          # model.lm_head (또는 get_output_embeddings)
+        self.lm_head = lm_head
         self.top_k = top_k
         self.save_dir = save_dir
         os.makedirs(save_dir, exist_ok=True)
-        # rows: list of dicts  →  나중에 CSV flush
         self.rows: List[Dict] = []
 
     @torch.no_grad()
@@ -63,12 +62,12 @@ class LogitLensRecorder:
         """
         num_layers = len(hidden_states)
         for layer_idx in range(num_layers):
-            h = hidden_states[layer_idx][:, position_idx, :]   # [B, D]  — batch 첫 번째만 사용
+            h = hidden_states[layer_idx][:, position_idx, :]   # [B, D]
             h_single = h[0:1].to(dtype=self.lm_head.weight.dtype)
 
             logits = self.lm_head(h_single)             # [1, vocab]
             probs = F.softmax(logits, dim=-1)            # 확률 변환
-            topk_probs, topk_ids = probs.topk(self.top_k, dim=-1)  # [1, k]
+            topk_probs, topk_ids = probs.topk(self.top_k, dim=-1)
 
             topk_probs = topk_probs[0].cpu().tolist()
             topk_ids = topk_ids[0].cpu().tolist()
@@ -84,7 +83,7 @@ class LogitLensRecorder:
                 row[f"top{rank+1}_prob"] = round(topk_probs[rank], 3)
             self.rows.append(row)
 
-        # 메모리 해제: hidden_states 텐서 참조 끊기
+        # 메모리 해제
         del hidden_states
         torch.cuda.empty_cache()
 
@@ -98,7 +97,7 @@ class LogitLensRecorder:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(self.rows)
-        print(f"[LogitLens] Saved {len(self.rows)} rows → {path}")
+        print(f"[LogitLens] Saved {len(self.rows)} rows -> {path}")
         return path
 
 
@@ -141,20 +140,16 @@ class ModelWrapper:
             elif self.latent_space_realign:
                 raise ValueError("latent_space_realign requires --use_second_HF_model when using vLLM backend.")
             _ensure_pad_token(self.tokenizer)
-            return  # skip loading transformers model
+            return
 
         # ── transformers path (non-vLLM) ──
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
         _ensure_pad_token(self.tokenizer)
 
-        # ===== 메모리 최적화: 14B 모델을 49GB 이내로 =====
-        # bfloat16 ≈ ~28GB weights.  KV cache + activations 를 줄이기 위해
-        # gradient_checkpointing 은 inference에선 불필요, 대신 max_memory / offload 설정
+        # ===== 메모리 최적화 =====
         load_kwargs = dict(
             torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         )
-
-        # 49GB GPU cap: device_map="auto" + max_memory 로 제한
         enable_mem_cap = bool(getattr(args, "max_gpu_mem_gb", 0)) if args else False
         if enable_mem_cap:
             max_gb = float(args.max_gpu_mem_gb)
@@ -168,7 +163,6 @@ class ModelWrapper:
         if len(self.tokenizer) != self.model.get_input_embeddings().weight.shape[0]:
             self.model.resize_token_embeddings(len(self.tokenizer))
 
-        # device_map="auto" 를 쓰지 않았으면 수동 .to(device)
         if not enable_mem_cap:
             self.model.to(device)
 
@@ -193,6 +187,45 @@ class ModelWrapper:
                 top_k=5,
                 save_dir=save_dir,
             )
+
+    # ─────────────────────────────────────────────────────────
+    # Logit Lens forward: prefill만 수행하고 hidden states 기록
+    # baseline / text_mas 에서 generate_text_batch 전에 호출
+    # ─────────────────────────────────────────────────────────
+    @torch.no_grad()
+    def forward_with_logit_lens(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        *,
+        task_id: int,
+        tag: str = "",
+    ) -> None:
+        """
+        generate 없이 prefill forward pass만 수행하여 logit lens 기록.
+        logit_lens가 None이면 아무것도 하지 않는다.
+        """
+        if self.logit_lens is None:
+            return
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids, device=self.device)
+
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=False,          # 메모리 절약: cache 불필요
+            output_hidden_states=True,
+            return_dict=True,
+        )
+        self.logit_lens.record(
+            outputs.hidden_states,
+            task_id=task_id,
+            position_idx=-1,
+            tag=tag,
+        )
+        # 즉시 해제
+        del outputs
+        torch.cuda.empty_cache()
 
     # ── chat helpers (unchanged) ──
     def render_chat(self, messages: List[Dict], add_generation_prompt: bool = True) -> str:
@@ -394,10 +427,6 @@ class ModelWrapper:
         logit_lens_task_id: int = -1,
         logit_lens_tag: str = "",
     ) -> Tuple:
-        """
-        latent thinking steps.
-        logit_lens_task_id >= 0 이면 logit lens 기록을 수행한다.
-        """
         if input_ids.dim() != 2:
             raise ValueError("input_ids must be 2D with shape [batch, seq_len]")
 
@@ -443,7 +472,6 @@ class ModelWrapper:
         latent_vecs_all: List[torch.Tensor] = []
         latent_vecs_all.append(e_t.detach().clone())
 
-        # hidden_states 참조 즉시 해제 (메모리 절약)
         del outputs.hidden_states
         del outputs
         torch.cuda.empty_cache()
@@ -486,7 +514,6 @@ class ModelWrapper:
                     tag=f"{logit_lens_tag}_latent_step{step}",
                 )
 
-            # 메모리 해제
             del step_outputs.hidden_states
             del step_outputs
             torch.cuda.empty_cache()
