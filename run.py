@@ -29,7 +29,7 @@ def evaluate(preds: List[Dict]) -> Tuple[float, int]:
     acc = correct / total if total > 0 else 0.0
     return acc, correct
 
-# Main processing function for each batch
+
 def process_batch(
     method,
     batch: List[Dict],
@@ -88,7 +88,7 @@ def main():
     parser.add_argument("--method", choices=["baseline", "text_mas", "latent_mas"], required=True,
                         help="Which multi-agent method to run: 'baseline', 'text_mas', or 'latent_mas'.")
     parser.add_argument("--model_name", type=str, required=True,
-                        choices=["Qwen/Qwen3-4B", "Qwen/Qwen3-8B", "Qwen/Qwen3-14B"],
+                        choices=["Qwen/Qwen3-4B", "Qwen/Qwen3-4B", "Qwen/Qwen3-14B"],
                         help="Model choices to use for experiments (e.g. 'Qwen/Qwen3-14B').")
     parser.add_argument("--max_samples", type=int, default=-1, help="Number of questions to evaluate; set -1 to use all samples.")
     parser.add_argument("--task", choices=["gsm8k", "aime2024", "aime2025", "gpqa", "arc_easy", "arc_challenge", "mbppplus", 'humanevalplus', 'medqa'], default="gsm8k",
@@ -116,6 +116,17 @@ def main():
     parser.add_argument("--tensor_parallel_size", type=int, default=1, help="How many GPUs vLLM should shard the model across")
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.9, help="Target GPU memory utilization for vLLM")
 
+    # ===== NEW: logit lens =====
+    parser.add_argument("--logit_lens", action="store_true",
+                        help="Enable logit lens: decode top-5 tokens per layer and save to CSV")
+    parser.add_argument("--logit_lens_dir", type=str, default="resource",
+                        help="Directory to save logit lens CSV (default: resource/)")
+
+    # ===== NEW: memory optimization =====
+    parser.add_argument("--max_gpu_mem_gb", type=float, default=0,
+                        help="GPU memory cap in GiB (e.g. 46). 0 = no cap. "
+                             "Sets device_map='auto' + max_memory for HF model loading.")
+
     args = parser.parse_args()
     
     if args.method == "latent_mas" and args.use_vllm:
@@ -133,7 +144,6 @@ def main():
         top_p=args.top_p,
     )
 
-    # method selection 
     if args.method == "baseline":
         method = BaselineMethod(
             model,
@@ -165,7 +175,6 @@ def main():
     processed = 0
     batch: List[Dict] = []
     
-    # dataset loading
     if args.task == "gsm8k":
         dataset_iter = load_gsm8k(split=args.split)
     elif args.task == "aime2024":
@@ -226,8 +235,15 @@ def main():
     total_time = time.time() - start_time
 
     acc, correct = evaluate(preds)
+
+    # ===== logit lens CSV flush =====
+    if args.logit_lens and model.logit_lens is not None:
+        # 파일명: {method}_{model_short}_{task}.csv
+        model_short = args.model_name.replace("/", "-")
+        csv_name = f"{args.method}_{model_short}_{args.task}.csv"
+        csv_path = model.logit_lens.flush_csv(csv_name)
+        print(f"[LogitLens] CSV saved to: {csv_path}")
     
-    # Load results in JSON format
     print(
         json.dumps(
             {
@@ -238,13 +254,12 @@ def main():
                 "max_samples": args.max_samples,
                 "accuracy": acc,
                 "correct": correct,
-                "total_time_sec": round(total_time,4),
+                "total_time_sec": round(total_time, 4),
                 "time_per_sample_sec": round(total_time / args.max_samples, 4),
             },
             ensure_ascii=False,
         )
     )
-
 
 
 if __name__ == "__main__":
