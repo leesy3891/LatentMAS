@@ -26,6 +26,7 @@ class BaselineMethod:
         self.method_name = "baseline"
         self.args = args
         self.task = args.task
+        self._logit_lens_task_counter = 0
 
     def run_batch(self, items: List[Dict]) -> List[Dict]:
         if len(items) > self.generate_bs:
@@ -37,6 +38,15 @@ class BaselineMethod:
         prompts, input_ids, attention_mask, tokens_batch = self.model.prepare_chat_batch(
             batch_messages, add_generation_prompt=True
         )
+
+        # ── Logit Lens: prefill forward (generate 전에 수행) ──
+        if self.model.logit_lens is not None:
+            self.model.forward_with_logit_lens(
+                input_ids,
+                attention_mask,
+                task_id=self._logit_lens_task_counter,
+                tag="SingleAgent",
+            )
         
         if self.use_vllm:
             generated_batch = self.model.vllm_generate_text_batch(
@@ -53,6 +63,8 @@ class BaselineMethod:
                 temperature=self.temperature,
                 top_p=self.top_p,
             )
+
+        self._logit_lens_task_counter += len(items)
 
         results: List[Dict] = []
         
@@ -73,7 +85,6 @@ class BaselineMethod:
                 print(f'=========================================')
                 print(f'Question {idx}')
                 print(f'error_msg: {error_msg}')
-                # print(f'=========================================')
 
             elif self.task in ["aime2024", "aime2025"]:
                 pred = normalize_answer(extract_gsm8k_answer(generated_text))
