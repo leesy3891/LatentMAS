@@ -1,13 +1,18 @@
 from typing import Dict, List, Optional, Tuple
 
 from . import default_agents
-from models import ModelWrapper, _past_length, _flush_gpu
+from models import ModelWrapper, _past_length
 from prompts import build_agent_message_sequential_latent_mas, build_agent_message_hierarchical_latent_mas
 from utils import extract_gsm8k_answer, normalize_answer, extract_markdown_python_block, run_with_timeout
 import torch
 import argparse
-from vllm import SamplingParams
-import pdb
+
+try:
+    from vllm import SamplingParams
+    _HAS_VLLM = True
+except ImportError:
+    _HAS_VLLM = False
+    SamplingParams = None
 
 try:
     from transformers.cache_utils import Cache
@@ -36,20 +41,27 @@ class LatentMASMethod:
         self.agents = default_agents()
         self.method_name = 'latent_mas'
         self.vllm_device = args.device 
-        self.HF_device = args.device2
+        self.HF_device = getattr(args, "device2", "cuda:1")
         self.latent_only = bool(getattr(args, "latent_only", False)) if args else False
         self.sequential_info_only = bool(getattr(args, "sequential_info_only", False)) if args else False
-        self.memory_opt = bool(getattr(args, "memory_opt", False)) if args else False
 
         if self.latent_only:
             self.sequential_info_only = True
 
-        self.sampling_params = SamplingParams(
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=args.max_new_tokens,
-        )
+        # vLLM SamplingParams: non-vLLM 모드에서는 생성하지 않음
+        if _HAS_VLLM and getattr(args, "use_vllm", False):
+            self.sampling_params = SamplingParams(
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=args.max_new_tokens,
+            )
+        else:
+            self.sampling_params = None
+
         self.task = args.task
+
+        # logit lens CSV 파일명 생성
+        self._logit_lens_task_counter = 0
 
     @staticmethod
     def _slice_tensor(tensor: torch.Tensor, tokens_to_keep: int) -> torch.Tensor:
@@ -102,7 +114,6 @@ class LatentMASMethod:
                     for item in items
                 ]
 
-
             prompts, input_ids, attention_mask, tokens_batch = self.model.prepare_chat_batch(
                 batch_messages, add_generation_prompt=True
             )
@@ -111,7 +122,7 @@ class LatentMASMethod:
                 prev_past_len = _past_length(past_kv)
 
                 if self.args.think:
-                        wrapped_prompts = [f"{prompt}<think>" for prompt in prompts]
+                    wrapped_prompts = [f"{prompt}<think>" for prompt in prompts]
                 else: 
                     wrapped_prompts = prompts
 
@@ -128,11 +139,16 @@ class LatentMASMethod:
                     active_ids = ids_row[mask_row.bool()].tolist()
                     wrapped_tokens_batch.append(self.model.tokenizer.convert_ids_to_tokens(active_ids))
 
+                # ── logit lens task id 계산 (batch 내 첫 번째 item 기준) ──
+                ll_task_id = self._logit_lens_task_counter if self.model.logit_lens else -1
+
                 past_kv = self.model.generate_latent_batch(
                     wrapped_ids,
                     attention_mask=wrapped_mask,
                     latent_steps=self.latent_steps,
                     past_key_values=past_kv,
+                    logit_lens_task_id=ll_task_id,
+                    logit_lens_tag=agent.name,
                 )
                 if self.sequential_info_only or self.latent_only:
                     new_past_len = _past_length(past_kv)
@@ -154,16 +170,12 @@ class LatentMASMethod:
                             "output": "",
                         }
                     )
-                # Free intermediate tensors
-                del wrapped_ids, wrapped_mask
-                if self.memory_opt:
-                    _flush_gpu()
             else:
 
                 past_for_decoding = past_kv if self.latent_steps > 0 else None
 
                 if self.args.think:
-                        judger_prompts = [f"{prompt}<think>" for prompt in prompts]
+                    judger_prompts = [f"{prompt}<think>" for prompt in prompts]
                 else: 
                     judger_prompts = prompts
                 
@@ -202,10 +214,13 @@ class LatentMASMethod:
                             "output": final_text,
                         }
                     )
-                # Free KV cache after judger is done
-                del past_kv, past_for_decoding, judger_ids, judger_mask
-                if self.memory_opt:
-                    _flush_gpu()
+
+        # 배치 처리 후 task counter 증가
+        self._logit_lens_task_counter += batch_size
+
+        # KV cache 메모리 해제
+        del past_kv
+        torch.cuda.empty_cache()
 
         results: List[Dict] = []
         for idx, item in enumerate(items):
@@ -286,9 +301,8 @@ class LatentMASMethod:
             if agent.role != "judger":
                 prev_past_len = _past_length(past_kv)
 
-                # to wrap all latent thoughts from previous agents
                 if self.args.think:
-                        wrapped_prompts = [f"{prompt}<think>" for prompt in prompts]
+                    wrapped_prompts = [f"{prompt}<think>" for prompt in prompts]
                 else: 
                     wrapped_prompts = prompts
 
@@ -342,17 +356,9 @@ class LatentMASMethod:
                             "output": "",
                         }
                     )
-                del wrapped_ids, wrapped_mask
-                if self.memory_opt:
-                    _flush_gpu()
             else:
                 
-                # A stack of [B, L_i, H]
                 past_embedding = torch.cat(embedding_record, dim=1).to(self.vllm_device)
-                # Free HF-side KV cache since we only need embeddings for vLLM
-                del past_kv
-                if self.memory_opt:
-                    _flush_gpu()
                 
                 if self.args.think:
                     judger_prompts = [f"{prompt}<think>" for prompt in prompts]
@@ -366,22 +372,18 @@ class LatentMASMethod:
                     add_special_tokens=False,
                 ) 
                 judger_encoded = judger_encoded["input_ids"].to(self.model.HF_device)
-                # Get current prompt embedding
                 curr_prompt_emb = self.model.embedding_layer(judger_encoded).squeeze(0).to(self.vllm_device)
                 
-                # assert Qwen model
                 assert "Qwen" in self.args.model_name or "qwen" in self.args.model_name, "latent_embedding_position is only supported for Qwen models currently."
 
-                # handle latent embedding insertion position    
                 len_of_left = []
                 for p in judger_prompts:
                     idx = p.find("<|im_start|>user\n")
-                    # Get the text up to and including "<|im_start|>user\n"
                     left = p[: idx + len("<|im_start|>user\n")]
                     len_of_left.append(len(self.model.tokenizer(left)['input_ids']))
                     
                 B, L, H = curr_prompt_emb.shape
-                _, Lp, H = past_embedding.shape  # assume shape consistency
+                _, Lp, H = past_embedding.shape
                     
                 whole_prompt_emb_list = []
                 for i in range(B):
@@ -391,25 +393,17 @@ class LatentMASMethod:
                     combined = torch.cat([left_emb, past_embedding[i], right_emb], dim=0)
                     whole_prompt_emb_list.append(combined)
 
-                # Pad back to max length if needed
                 max_len = max(x.shape[0] for x in whole_prompt_emb_list)
                 whole_prompt_emb = torch.stack([
                     torch.cat([x, torch.zeros(max_len - x.shape[0], H, device=x.device)], dim=0)
                     for x in whole_prompt_emb_list
                 ])
 
-                # Free intermediates
-                del past_embedding, curr_prompt_emb
-                if self.memory_opt:
-                    _flush_gpu()
-
-                # Use vLLM 
                 prompt_embeds_list = [
                     {
                         "prompt_embeds": embeds
                     } for embeds in whole_prompt_emb 
                 ]
-                
                 
                 outputs = self.model.vllm_engine.generate(
                     prompt_embeds_list,
@@ -429,10 +423,6 @@ class LatentMASMethod:
                             "output": text_out,
                         }
                     )
-                del whole_prompt_emb
-                if self.memory_opt:
-                    _flush_gpu()
-
 
         results: List[Dict] = []
         for idx, item in enumerate(items):
