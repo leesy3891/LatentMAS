@@ -1,11 +1,11 @@
 from typing import Dict, List
 
 from . import default_agents
-from models import ModelWrapper, _flush_gpu
+from models import ModelWrapper
 from prompts import build_agent_messages_hierarchical_text_mas, build_agent_messages_sequential_text_mas
 from utils import extract_gsm8k_answer, normalize_answer, extract_markdown_python_block, run_with_timeout
 import argparse
-import pdb
+import torch
 
 class TextMASMethod:
     def __init__(
@@ -28,7 +28,7 @@ class TextMASMethod:
         self.args = args
         self.method_name = "text_mas"
         self.task = args.task
-        self.memory_opt = bool(getattr(args, "memory_opt", False)) if args else False
+        self._logit_lens_task_counter = 0
         
     def run_batch(self, items: List[Dict]) -> List[Dict]:
         if len(items) > self.generate_bs:
@@ -68,6 +68,15 @@ class TextMASMethod:
             prompts, input_ids, attention_mask, tokens_batch = self.model.prepare_chat_batch(
                 batch_messages, add_generation_prompt=True
             )
+
+            # ── Logit Lens: prefill forward (generate 전에 수행) ──
+            if self.model.logit_lens is not None:
+                self.model.forward_with_logit_lens(
+                    input_ids,
+                    attention_mask,
+                    task_id=self._logit_lens_task_counter,
+                    tag=f"{agent.name}",
+                )
 
             if self.model.use_vllm:
                 generated_texts = self.model.vllm_generate_text_batch(
@@ -124,10 +133,8 @@ class TextMASMethod:
                     }
                 )
 
-            # Free tensors between agents
-            del input_ids, attention_mask
-            if self.memory_opt:
-                _flush_gpu()
+        # 배치 처리 후 task counter 증가
+        self._logit_lens_task_counter += batch_size
 
         results: List[Dict] = []
         for idx, item in enumerate(items):
