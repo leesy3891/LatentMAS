@@ -1,7 +1,7 @@
 import os
-import gc
 import csv
 import torch
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from typing import Dict, List, Optional, Tuple
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -28,12 +28,78 @@ def _past_length(past_key_values: Optional[Tuple]) -> int:
     return k.shape[-2]
 
 
-def _flush_gpu():
-    """Aggressively free GPU memory."""
-    gc.collect()
-    if torch.cuda.is_available():
+# ──────────────────────────────────────────────────────────────
+# Logit Lens: layer별 hidden state → top-k token decode
+# ──────────────────────────────────────────────────────────────
+class LogitLensRecorder:
+    """
+    각 forward pass에서 layer별 hidden states를 lm_head에 통과시켜
+    top-k token과 확률을 기록한다.
+    """
+
+    def __init__(self, tokenizer: AutoTokenizer, lm_head: torch.nn.Module,
+                 top_k: int = 5, save_dir: str = "resource"):
+        self.tokenizer = tokenizer
+        self.lm_head = lm_head          # model.lm_head (또는 get_output_embeddings)
+        self.top_k = top_k
+        self.save_dir = save_dir
+        os.makedirs(save_dir, exist_ok=True)
+        # rows: list of dicts  →  나중에 CSV flush
+        self.rows: List[Dict] = []
+
+    @torch.no_grad()
+    def record(
+        self,
+        hidden_states: Tuple[torch.Tensor, ...],
+        task_id: int,
+        position_idx: int = -1,
+        tag: str = "",
+    ) -> None:
+        """
+        hidden_states: model output의 hidden_states (layer 0 = embedding, 1..N = transformer layers)
+        task_id:       현재 문제 번호
+        position_idx:  시퀀스에서 어느 위치의 hidden을 볼지 (기본 마지막 토큰)
+        tag:           agent/step 등 구분용 문자열
+        """
+        num_layers = len(hidden_states)
+        for layer_idx in range(num_layers):
+            h = hidden_states[layer_idx][:, position_idx, :]   # [B, D]  — batch 첫 번째만 사용
+            h_single = h[0:1].to(dtype=self.lm_head.weight.dtype)
+
+            logits = self.lm_head(h_single)             # [1, vocab]
+            probs = F.softmax(logits, dim=-1)            # 확률 변환
+            topk_probs, topk_ids = probs.topk(self.top_k, dim=-1)  # [1, k]
+
+            topk_probs = topk_probs[0].cpu().tolist()
+            topk_ids = topk_ids[0].cpu().tolist()
+            topk_tokens = [self.tokenizer.decode([tid]).strip() for tid in topk_ids]
+
+            row: Dict = {
+                "task_id": task_id,
+                "tag": tag,
+                "layer": layer_idx,
+            }
+            for rank in range(self.top_k):
+                row[f"top{rank+1}_token"] = topk_tokens[rank]
+                row[f"top{rank+1}_prob"] = round(topk_probs[rank], 3)
+            self.rows.append(row)
+
+        # 메모리 해제: hidden_states 텐서 참조 끊기
+        del hidden_states
         torch.cuda.empty_cache()
 
+    def flush_csv(self, filename: str) -> str:
+        """rows를 CSV로 저장하고 경로를 반환한다."""
+        path = os.path.join(self.save_dir, filename)
+        if not self.rows:
+            return path
+        fieldnames = list(self.rows[0].keys())
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(self.rows)
+        print(f"[LogitLens] Saved {len(self.rows)} rows → {path}")
+        return path
 
 
 class ModelWrapper:
@@ -45,36 +111,22 @@ class ModelWrapper:
         self.latent_space_realign = bool(getattr(args, "latent_space_realign", False)) if args else False
         self._latent_realign_matrices: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
         self.args = args
-        self.memory_opt = bool(getattr(args, "memory_opt", False)) if args else False
 
         # for ablation
         self.pre_aligned = None
 
+        # logit lens recorder (초기화는 모델 로드 후)
+        self.logit_lens: Optional[LogitLensRecorder] = None
+
         if self.use_vllm:
-            
             tp_size = max(1, int(getattr(args, "tensor_parallel_size", 1)))
-            # Lower default GPU util when memory_opt is on
-            default_util = 0.70 if self.memory_opt else 0.9
-            gpu_util = float(getattr(args, "gpu_memory_utilization", default_util))
+            gpu_util = float(getattr(args, "gpu_memory_utilization", 0.9))
             
             print(f"[vLLM] Using vLLM backend for model {model_name}")
-            vllm_kwargs = dict(
-                model=model_name,
-                tensor_parallel_size=tp_size,
-                gpu_memory_utilization=gpu_util,
-                dtype="bfloat16",
-            )
-            # memory_opt: enforce swap space & lower max_model_len to cap KV cache
-            if self.memory_opt:
-                vllm_kwargs["max_model_len"] = int(getattr(args, "max_model_len", 8192))
-                vllm_kwargs["swap_space"] = int(getattr(args, "swap_space", 8))
-                vllm_kwargs["enforce_eager"] = True  # skip cuda graph to save memory
-
             if args.enable_prefix_caching and args.method == "latent_mas": 
-                vllm_kwargs["enable_prefix_caching"] = True
-                vllm_kwargs["enable_prompt_embeds"] = True
-            
-            self.vllm_engine = LLM(**vllm_kwargs)
+                self.vllm_engine = LLM(model=model_name, tensor_parallel_size=tp_size, gpu_memory_utilization=gpu_util, enable_prefix_caching=True, enable_prompt_embeds=True)
+            else:
+                self.vllm_engine = LLM(model=model_name, tensor_parallel_size=tp_size, gpu_memory_utilization=gpu_util)
             self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
             
             use_second_hf = bool(getattr(args, "use_second_HF_model", False)) if args else False
@@ -82,36 +134,67 @@ class ModelWrapper:
                 self.HF_model = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     torch_dtype=(torch.bfloat16 if torch.cuda.is_available() else torch.float32),
-                ).to(args.device2).eval()
+                ).to(args.device2).eval() 
                 self.embedding_layer = self.HF_model.get_input_embeddings()
                 self.HF_device = args.device2
                 self._ensure_latent_realign_matrix(self.HF_model, torch.device(self.HF_device), args)
             elif self.latent_space_realign:
                 raise ValueError("latent_space_realign requires --use_second_HF_model when using vLLM backend.")
             _ensure_pad_token(self.tokenizer)
-            _flush_gpu()
             return  # skip loading transformers model
 
-        # fallback: normal transformers path
+        # ── transformers path (non-vLLM) ──
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
         _ensure_pad_token(self.tokenizer)
 
+        # ===== 메모리 최적화: 14B 모델을 49GB 이내로 =====
+        # bfloat16 ≈ ~28GB weights.  KV cache + activations 를 줄이기 위해
+        # gradient_checkpointing 은 inference에선 불필요, 대신 max_memory / offload 설정
+        load_kwargs = dict(
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        )
+
+        # 49GB GPU cap: device_map="auto" + max_memory 로 제한
+        enable_mem_cap = bool(getattr(args, "max_gpu_mem_gb", 0)) if args else False
+        if enable_mem_cap:
+            max_gb = float(args.max_gpu_mem_gb)
+            load_kwargs["device_map"] = "auto"
+            load_kwargs["max_memory"] = {0: f"{int(max_gb)}GiB", "cpu": "32GiB"}
+            print(f"[Memory] GPU memory cap: {max_gb} GiB (device_map=auto)")
+        
         with torch.no_grad():
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=(torch.bfloat16 if torch.cuda.is_available() else torch.float32),
-            )
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+
         if len(self.tokenizer) != self.model.get_input_embeddings().weight.shape[0]:
             self.model.resize_token_embeddings(len(self.tokenizer))
-        self.model.to(device)
+
+        # device_map="auto" 를 쓰지 않았으면 수동 .to(device)
+        if not enable_mem_cap:
+            self.model.to(device)
 
         self.model.eval()
         if hasattr(self.model.config, "use_cache"):
             self.model.config.use_cache = True
         if self.latent_space_realign:
             self._ensure_latent_realign_matrix(self.model, self.device, args)
-        _flush_gpu()
 
+        # ── logit lens 초기화 ──
+        enable_logit_lens = bool(getattr(args, "logit_lens", False)) if args else False
+        if enable_logit_lens:
+            lm_head = self.model.get_output_embeddings()
+            if lm_head is None:
+                lm_head = getattr(self.model, "lm_head", None)
+            if lm_head is None:
+                raise RuntimeError("Cannot find lm_head for logit lens.")
+            save_dir = getattr(args, "logit_lens_dir", "resource")
+            self.logit_lens = LogitLensRecorder(
+                tokenizer=self.tokenizer,
+                lm_head=lm_head,
+                top_k=5,
+                save_dir=save_dir,
+            )
+
+    # ── chat helpers (unchanged) ──
     def render_chat(self, messages: List[Dict], add_generation_prompt: bool = True) -> str:
         tpl = getattr(self.tokenizer, "chat_template", None)
         if tpl:
@@ -195,29 +278,19 @@ class ModelWrapper:
             or not hasattr(output_embeds, "weight")
         ):
             raise RuntimeError("Cannot build latent realignment matrix: embedding weights not accessible.")
-
-        # Build on CPU to avoid GPU memory spike, then move result
-        input_weight = input_embeds.weight.detach().to(device="cpu", dtype=torch.float32)
-        output_weight = output_embeds.weight.detach().to(device="cpu", dtype=torch.float32)
+        input_weight = input_embeds.weight.detach().to(device=device, dtype=torch.float32)
+        output_weight = output_embeds.weight.detach().to(device=device, dtype=torch.float32)
         gram = torch.matmul(output_weight.T, output_weight)
-        reg = 1e-5 * torch.eye(gram.shape[0], device="cpu", dtype=gram.dtype)
+        reg = 1e-5 * torch.eye(gram.shape[0], device=gram.device, dtype=gram.dtype)
         gram = gram + reg
         rhs = torch.matmul(output_weight.T, input_weight)
         realign_matrix = torch.linalg.solve(gram, rhs)
         target_norm = input_weight.norm(dim=1).mean().detach()
 
-        # Free large intermediates
-        del input_weight, output_weight, gram, rhs
-        _flush_gpu()
-
         if self.args.latent_space_realign:
             pass
         else:
-            realign_matrix = torch.eye(realign_matrix.shape[0], device="cpu", dtype=realign_matrix.dtype)
-
-        # Move to target device
-        realign_matrix = realign_matrix.to(device)
-        target_norm = target_norm.to(device)
+            realign_matrix = torch.eye(realign_matrix.shape[0], device=realign_matrix.device, dtype=realign_matrix.dtype)
 
         return realign_matrix, target_norm
 
@@ -301,11 +374,7 @@ class ModelWrapper:
             generated_ids = sequences[idx, length:]
             text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
             generations.append(text)
-        past_kv = outputs.past_key_values
-        del outputs
-        if self.memory_opt:
-            _flush_gpu()
-        return generations, past_kv
+        return generations, outputs.past_key_values
 
     def tokenize_text(self, text: str) -> torch.Tensor:
         return self.tokenizer(
@@ -322,7 +391,13 @@ class ModelWrapper:
         *,
         latent_steps: int,
         past_key_values: Optional[Tuple] = None,
+        logit_lens_task_id: int = -1,
+        logit_lens_tag: str = "",
     ) -> Tuple:
+        """
+        latent thinking steps.
+        logit_lens_task_id >= 0 이면 logit lens 기록을 수행한다.
+        """
         if input_ids.dim() != 2:
             raise ValueError("input_ids must be 2D with shape [batch, seq_len]")
 
@@ -351,18 +426,27 @@ class ModelWrapper:
         )
         past = outputs.past_key_values
 
-        e_t = outputs.hidden_states[0][:, -1, :]          # [B, D]
-        last_hidden = outputs.hidden_states[-1][:, -1, :] # [B, D]
+        # ── logit lens: initial forward ──
+        if self.logit_lens is not None and logit_lens_task_id >= 0:
+            self.logit_lens.record(
+                outputs.hidden_states,
+                task_id=logit_lens_task_id,
+                position_idx=-1,
+                tag=f"{logit_lens_tag}_prompt",
+            )
+
+        e_t = outputs.hidden_states[0][:, -1, :]
+        last_hidden = outputs.hidden_states[-1][:, -1, :]
         h_t = last_hidden.detach().clone()
 
         e_t_plus_1 = None
         latent_vecs_all: List[torch.Tensor] = []
         latent_vecs_all.append(e_t.detach().clone())
 
-        # Free hidden_states early
+        # hidden_states 참조 즉시 해제 (메모리 절약)
+        del outputs.hidden_states
         del outputs
-        if self.memory_opt:
-            _flush_gpu()
+        torch.cuda.empty_cache()
 
         for step in range(latent_steps):
 
@@ -382,7 +466,7 @@ class ModelWrapper:
                 dtype=torch.long,
                 device=self.device,
             )
-            step_out = self.model(
+            step_outputs = self.model(
                 inputs_embeds=latent_embed,
                 attention_mask=latent_mask,
                 past_key_values=past,
@@ -390,11 +474,22 @@ class ModelWrapper:
                 output_hidden_states=True,
                 return_dict=True,
             )
-            past = step_out.past_key_values
-            last_hidden = step_out.hidden_states[-1][:, -1, :]
-            del step_out
-            if self.memory_opt and step % 2 == 0:
-                _flush_gpu()
+            past = step_outputs.past_key_values
+            last_hidden = step_outputs.hidden_states[-1][:, -1, :]
+
+            # ── logit lens: 각 latent step ──
+            if self.logit_lens is not None and logit_lens_task_id >= 0:
+                self.logit_lens.record(
+                    step_outputs.hidden_states,
+                    task_id=logit_lens_task_id,
+                    position_idx=-1,
+                    tag=f"{logit_lens_tag}_latent_step{step}",
+                )
+
+            # 메모리 해제
+            del step_outputs.hidden_states
+            del step_outputs
+            torch.cuda.empty_cache()
 
         return past
     
@@ -434,14 +529,9 @@ class ModelWrapper:
         last_hidden = outputs.hidden_states[-1][:, -1, :]
         
         curr_output_embedding = [] 
-        curr_output_embedding.append(outputs.hidden_states[0])  # input embedding
-        
-        del outputs
-        if self.memory_opt:
-            _flush_gpu()
+        curr_output_embedding.append(outputs.hidden_states[0])
         
         for _ in range(latent_steps):
-
             source_model = self.HF_model if hasattr(self, "HF_model") else self.model
             latent_vec = self._apply_latent_realignment(last_hidden, source_model)
             latent_embed = latent_vec.unsqueeze(1)
@@ -451,7 +541,7 @@ class ModelWrapper:
                 dtype=torch.long,
                 device=latent_embed.device,
             )
-            step_out = self.HF_model(
+            outputs = self.HF_model(
                 inputs_embeds=latent_embed,
                 attention_mask=latent_mask,
                 past_key_values=past,
@@ -459,12 +549,8 @@ class ModelWrapper:
                 output_hidden_states=True,
                 return_dict=True,
             )
-            past = step_out.past_key_values
-            last_hidden = step_out.hidden_states[-1][:, -1, :]
-            del step_out
-            if self.memory_opt:
-                _flush_gpu()
-
+            past = outputs.past_key_values
+            last_hidden = outputs.hidden_states[-1][:, -1, :]
             curr_output_embedding.append(latent_embed.detach())
 
-        return past, torch.cat(curr_output_embedding, dim=1) # Output input embeddings
+        return past, torch.cat(curr_output_embedding, dim=1)
