@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 from typing import Dict, List, Tuple
 
 from tqdm import tqdm
@@ -30,6 +31,63 @@ def evaluate(preds: List[Dict]) -> Tuple[float, int]:
     return acc, correct
 
 
+# ──────────────────────────────────────────────────────────────
+# CoT Reasoning Logger — 배치 단위로 즉시 파일에 기록 (streaming)
+# ──────────────────────────────────────────────────────────────
+class CoTLogger:
+    """
+    문제별 CoT reasoning을 텍스트 파일에 streaming 기록한다.
+    배치 처리 직후 flush하여 메모리 부담 없이 동작.
+    """
+
+    def __init__(self, filepath: str):
+        self.filepath = filepath
+        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+        # 파일을 새로 생성 (기존 내용 초기화)
+        with open(filepath, "w", encoding="utf-8") as f:
+            pass
+
+    def write_result(self, task_number: int, res: Dict) -> None:
+        """단일 task 결과를 파일에 append 한다."""
+        lines: List[str] = []
+        lines.append(f"[TASK_NUMBER] {task_number}")
+        lines.append(f"[PREDICTION] {res.get('prediction', '')}")
+        lines.append(f"[GOLD] {res.get('gold', '')}")
+        lines.append(f"[CORRECT] {res.get('correct', False)}")
+
+        # raw answer
+        lines.append("[RAW_ANSWER_START]")
+        lines.append(res.get("raw_prediction", "").rstrip())
+        lines.append("[RAW_ANSWER_END]")
+
+        # agent traces
+        agents = res.get("agents", [])
+        if agents:
+            lines.append("[AGENT_TRACES_START]")
+            for a in agents:
+                name = a.get("name", "Agent")
+                role = a.get("role", "")
+                lines.append(f"--- agent: {name} ({role}) ---")
+                output = a.get("output", "").rstrip()
+                if output:
+                    lines.append(output)
+                else:
+                    latent_steps = a.get("latent_steps", None)
+                    if latent_steps is not None:
+                        lines.append(f"(latent thinking: {latent_steps} steps, no text output)")
+            lines.append("[AGENT_TRACES_END]")
+
+        lines.append("")  # 빈 줄로 task 구분
+
+        with open(self.filepath, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def write_batch(self, batch_start: int, results: List[Dict]) -> None:
+        """배치 내 모든 결과를 순서대로 기록."""
+        for offset, res in enumerate(results):
+            self.write_result(batch_start + offset, res)
+
+
 def process_batch(
     method,
     batch: List[Dict],
@@ -38,6 +96,7 @@ def process_batch(
     progress,
     max_samples: int,
     args: argparse.Namespace,
+    cot_logger: "CoTLogger | None" = None,
 ) -> Tuple[int, List[Dict]]:
     remaining = max_samples - processed
     if remaining <= 0:
@@ -50,8 +109,12 @@ def process_batch(
     if len(results) > remaining:
         results = results[:remaining]
     batch_start = processed
+
+    # ── CoT 로깅: 즉시 파일에 flush ──
+    if cot_logger is not None:
+        cot_logger.write_batch(batch_start, results)
+
     for offset, res in enumerate(results):
-        preds.append(res)
         problem_idx = batch_start + offset + 1
         print(f"\n==================== Problem #{problem_idx} ====================")
         print("Question:")
@@ -74,6 +137,17 @@ def process_batch(
             print(agent_output)
             print("----------------------------------------------")
         print(f"Result: Pred={res.get('prediction')} | Gold={res.get('gold')} | OK={res.get('correct')}")
+
+        # ── 메모리 최적화: 무거운 필드를 preds 에 넣지 않음 ──
+        # raw_prediction, agents 내 input/input_ids/input_tokens 는
+        # 이미 CoT 파일과 stdout에 기록되었으므로 제거
+        lightweight_res = {
+            "question": res.get("question", ""),
+            "gold": res.get("gold", ""),
+            "prediction": res.get("prediction", ""),
+            "correct": res.get("correct", False),
+        }
+        preds.append(lightweight_res)
 
     processed += len(results)
     if progress is not None:
@@ -116,16 +190,22 @@ def main():
     parser.add_argument("--tensor_parallel_size", type=int, default=1, help="How many GPUs vLLM should shard the model across")
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.9, help="Target GPU memory utilization for vLLM")
 
-    # ===== NEW: logit lens =====
+    # logit lens
     parser.add_argument("--logit_lens", action="store_true",
                         help="Enable logit lens: decode top-5 tokens per layer and save to CSV")
     parser.add_argument("--logit_lens_dir", type=str, default="resource",
                         help="Directory to save logit lens CSV (default: resource/)")
 
-    # ===== NEW: memory optimization =====
+    # memory optimization
     parser.add_argument("--max_gpu_mem_gb", type=float, default=0,
                         help="GPU memory cap in GiB (e.g. 46). 0 = no cap. "
                              "Sets device_map='auto' + max_memory for HF model loading.")
+
+    # ===== NEW: CoT reasoning log =====
+    parser.add_argument("--cot_log", action="store_true",
+                        help="Enable CoT reasoning log: save per-task reasoning traces to a text file")
+    parser.add_argument("--cot_log_dir", type=str, default="cot_logs",
+                        help="Directory to save CoT log text files (default: cot_logs/)")
 
     args = parser.parse_args()
     
@@ -171,6 +251,15 @@ def main():
             args=args,
         )
 
+    # ── CoT Logger 초기화 ──
+    cot_logger = None
+    if args.cot_log:
+        model_short = args.model_name.replace("/", "-")
+        cot_filename = f"{args.method}_{model_short}_{args.task}.txt"
+        cot_filepath = os.path.join(args.cot_log_dir, cot_filename)
+        cot_logger = CoTLogger(cot_filepath)
+        print(f"[CoT] Logging to: {cot_filepath}")
+
     preds: List[Dict] = []
     processed = 0
     batch: List[Dict] = []
@@ -215,6 +304,7 @@ def main():
                 progress,
                 args.max_samples,
                 args,
+                cot_logger=cot_logger,
             )
             batch = []
             if processed >= args.max_samples:
@@ -229,6 +319,7 @@ def main():
             progress,
             max_samples=args.max_samples,
             args=args,
+            cot_logger=cot_logger,
         )
     progress.close()
     
@@ -238,12 +329,15 @@ def main():
 
     # ===== logit lens CSV flush =====
     if args.logit_lens and model.logit_lens is not None:
-        # 파일명: {method}_{model_short}_{task}.csv
         model_short = args.model_name.replace("/", "-")
         csv_name = f"{args.method}_{model_short}_{args.task}.csv"
         csv_path = model.logit_lens.flush_csv(csv_name)
         print(f"[LogitLens] CSV saved to: {csv_path}")
     
+    # ===== CoT log summary =====
+    if cot_logger is not None:
+        print(f"[CoT] Reasoning log saved to: {cot_logger.filepath}")
+
     print(
         json.dumps(
             {
