@@ -41,10 +41,14 @@ class BaselineMethod:
 
         # ── Logit Lens: prefill forward (generate 전에 수행) ──
         if self.model.logit_lens is not None:
+            task_ids = list(range(
+                self._logit_lens_task_counter,
+                self._logit_lens_task_counter + len(items),
+            ))
             self.model.forward_with_logit_lens(
                 input_ids,
                 attention_mask,
-                task_id=self._logit_lens_task_counter,
+                task_ids=task_ids,
                 tag="SingleAgent",
             )
         
@@ -63,6 +67,31 @@ class BaselineMethod:
                 temperature=self.temperature,
                 top_p=self.top_p,
             )
+
+        # ── Logit Lens: post-generation (generated tokens의 layer-wise 분석) ──
+        if self.model.logit_lens is not None:
+            task_ids = list(range(
+                self._logit_lens_task_counter,
+                self._logit_lens_task_counter + len(items),
+            ))
+            # generated text를 다시 tokenize하여 full sequence 구성
+            prompt_lengths = attention_mask.sum(dim=1).tolist()
+            full_texts = [prompts[i] + generated_batch[i] for i in range(len(items))]
+            full_encoded = self.model.tokenizer(
+                full_texts,
+                return_tensors="pt",
+                padding=True,
+                add_special_tokens=False,
+            )
+            full_ids = full_encoded["input_ids"].to(self.model.device)
+            self.model.postgen_logit_lens(
+                full_ids,
+                [int(pl) for pl in prompt_lengths],
+                task_ids=task_ids,
+                tag="SingleAgent",
+                max_positions=getattr(self.args, "logit_lens_max_positions", 64),
+            )
+            del full_ids, full_encoded
 
         self._logit_lens_task_counter += len(items)
 
