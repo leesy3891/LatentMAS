@@ -1,0 +1,9 @@
+
+# Large raw logs
+cot_logs/
+seoyounglee/logs/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
