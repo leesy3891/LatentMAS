@@ -323,7 +323,7 @@ def main():
         description="Generate 3 paraphrased versions of dataset questions using Qwen3-14B")
     parser.add_argument("--task", required=True, choices=list(LOADERS.keys()))
     parser.add_argument("--max_samples", type=int, default=-1, help="-1 = all")
-    parser.add_argument("--output_dir", type=str, default="/paraphrased_data")
+    parser.add_argument("--output_dir", type=str, default="./paraphrased_data")
     parser.add_argument("--split", type=str, default=None)
     parser.add_argument("--resume", action="store_true", help="Resume from existing partial output")
     # Model args
