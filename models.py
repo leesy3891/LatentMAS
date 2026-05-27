@@ -50,38 +50,44 @@ class LogitLensRecorder:
     def record(
         self,
         hidden_states: Tuple[torch.Tensor, ...],
-        task_id: int,
+        task_ids: List[int],
         position_idx: int = -1,
+        position: int = 0,
         tag: str = "",
     ) -> None:
         """
         hidden_states: model output의 hidden_states (layer 0 = embedding, 1..N = transformer layers)
-        task_id:       현재 문제 번호
+        task_ids:      batch 내 각 item의 task id 리스트
         position_idx:  시퀀스에서 어느 위치의 hidden을 볼지 (기본 마지막 토큰)
+        position:      CSV에 기록될 position 번호
         tag:           agent/step 등 구분용 문자열
         """
         num_layers = len(hidden_states)
-        for layer_idx in range(num_layers):
-            h = hidden_states[layer_idx][:, position_idx, :]   # [B, D]
-            h_single = h[0:1].to(dtype=self.lm_head.weight.dtype)
+        batch_size = hidden_states[0].shape[0]
+        for b_idx in range(batch_size):
+            tid = task_ids[b_idx] if b_idx < len(task_ids) else task_ids[-1]
+            for layer_idx in range(num_layers):
+                h = hidden_states[layer_idx][b_idx:b_idx+1, position_idx, :]  # [1, D]
+                h = h.to(dtype=self.lm_head.weight.dtype, device=self.lm_head.weight.device)
 
-            logits = self.lm_head(h_single)             # [1, vocab]
-            probs = F.softmax(logits, dim=-1)            # 확률 변환
-            topk_probs, topk_ids = probs.topk(self.top_k, dim=-1)
+                logits = self.lm_head(h)
+                probs = F.softmax(logits, dim=-1)
+                topk_probs, topk_ids = probs.topk(self.top_k, dim=-1)
 
-            topk_probs = topk_probs[0].cpu().tolist()
-            topk_ids = topk_ids[0].cpu().tolist()
-            topk_tokens = [self.tokenizer.decode([tid]).strip() for tid in topk_ids]
+                topk_probs = topk_probs[0].cpu().tolist()
+                topk_ids = topk_ids[0].cpu().tolist()
+                topk_tokens = [self.tokenizer.decode([tid_tok]).strip() for tid_tok in topk_ids]
 
-            row: Dict = {
-                "task_id": task_id,
-                "tag": tag,
-                "layer": layer_idx,
-            }
-            for rank in range(self.top_k):
-                row[f"top{rank+1}_token"] = topk_tokens[rank]
-                row[f"top{rank+1}_prob"] = round(topk_probs[rank], 3)
-            self.rows.append(row)
+                row: Dict = {
+                    "task_id": tid,
+                    "tag": tag,
+                    "position": position,
+                    "layer": layer_idx,
+                }
+                for rank in range(self.top_k):
+                    row[f"top{rank+1}_token"] = topk_tokens[rank]
+                    row[f"top{rank+1}_prob"] = round(topk_probs[rank], 3)
+                self.rows.append(row)
 
         # 메모리 해제
         del hidden_states
@@ -91,33 +97,45 @@ class LogitLensRecorder:
     def record_from_last_token_hiddens(
         self,
         last_token_hiddens: List[torch.Tensor],
-        task_id: int,
+        task_ids: List[int],
         tag: str = "",
+        position: int = 0,
     ) -> None:
         """
         Hook으로 캡처한 layer별 마지막 토큰 hidden으로 logit lens 기록.
         last_token_hiddens: [layer_0_h, layer_1_h, ...], 각각 [B, D] (CPU)
+        task_ids: batch 내 각 item의 task id 리스트
+        position: 기록 중인 position index (0 = prefill last / generated token index)
         """
-        for layer_idx, h in enumerate(last_token_hiddens):
-            h_single = h[0:1].to(device=self.lm_head.weight.device, dtype=self.lm_head.weight.dtype)
+        batch_size = last_token_hiddens[0].shape[0] if last_token_hiddens else 0
+        for b_idx in range(batch_size):
+            tid = task_ids[b_idx] if b_idx < len(task_ids) else task_ids[-1]
+            if tid < 0:
+                continue  # 이 batch item은 해당 position이 유효하지 않음
+            for layer_idx, h in enumerate(last_token_hiddens):
+                h_single = h[b_idx:b_idx+1].to(
+                    device=self.lm_head.weight.device,
+                    dtype=self.lm_head.weight.dtype,
+                )
 
-            logits = self.lm_head(h_single)
-            probs = F.softmax(logits, dim=-1)
-            topk_probs, topk_ids = probs.topk(self.top_k, dim=-1)
+                logits = self.lm_head(h_single)
+                probs = F.softmax(logits, dim=-1)
+                topk_probs, topk_ids = probs.topk(self.top_k, dim=-1)
 
-            topk_probs = topk_probs[0].cpu().tolist()
-            topk_ids = topk_ids[0].cpu().tolist()
-            topk_tokens = [self.tokenizer.decode([tid]).strip() for tid in topk_ids]
+                topk_probs = topk_probs[0].cpu().tolist()
+                topk_ids = topk_ids[0].cpu().tolist()
+                topk_tokens = [self.tokenizer.decode([tid_tok]).strip() for tid_tok in topk_ids]
 
-            row: Dict = {
-                "task_id": task_id,
-                "tag": tag,
-                "layer": layer_idx,
-            }
-            for rank in range(self.top_k):
-                row[f"top{rank+1}_token"] = topk_tokens[rank]
-                row[f"top{rank+1}_prob"] = round(topk_probs[rank], 3)
-            self.rows.append(row)
+                row: Dict = {
+                    "task_id": tid,
+                    "tag": tag,
+                    "position": position,
+                    "layer": layer_idx,
+                }
+                for rank in range(self.top_k):
+                    row[f"top{rank+1}_token"] = topk_tokens[rank]
+                    row[f"top{rank+1}_prob"] = round(topk_probs[rank], 3)
+                self.rows.append(row)
 
         del last_token_hiddens
 
@@ -232,41 +250,34 @@ class ModelWrapper:
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         *,
-        task_id: int,
+        task_ids: List[int],
         tag: str = "",
     ) -> None:
         """
-        Hook 기반 logit lens: output_hidden_states=True 없이
-        각 layer의 마지막 토큰 hidden만 캡처하여 메모리를 절약한다.
+        Hook 기반 logit lens (prefill): output_hidden_states=True 없이
+        각 layer의 마지막 토큰 hidden만 캡처.
+        batch 내 모든 item을 개별 task_id로 기록한다.
 
-        output_hidden_states=True는 (num_layers × batch × seq_len × hidden_dim)을
-        모두 메모리에 보유하므로 긴 시퀀스에서 OOM을 유발한다.
-        Hook 방식은 layer당 (batch × 1 × hidden_dim)만 저장하므로
-        수 GiB → 수 MB로 감소.
+        position=0 으로 기록됨 (= 첫 생성 토큰 예측 상태).
         """
         if self.logit_lens is None:
             return
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids, device=self.device)
 
-        # 각 batch item별 실제 마지막 토큰 위치 (패딩 제외)
-        # attention_mask.sum(dim=1) - 1 = 마지막 non-pad 토큰 인덱스
         last_positions = (attention_mask.sum(dim=1) - 1).long()  # [B]
 
-        # layer별 마지막 토큰 hidden을 저장할 리스트
         captured_hiddens: List[torch.Tensor] = []
         hooks = []
 
         # embedding layer hook
         embed_layer = self.model.get_input_embeddings()
         def _embed_hook(module, input, output, positions=last_positions):
-            # output: [B, seq_len, D]
             h = torch.stack([output[b, positions[b], :] for b in range(output.shape[0])])
             captured_hiddens.append(h.detach().cpu())
         hooks.append(embed_layer.register_forward_hook(_embed_hook))
 
         # transformer layer hooks
-        # Qwen3: model.model.layers  /  LLaMA: model.model.layers
         decoder_layers = None
         if hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
             decoder_layers = self.model.model.layers
@@ -276,13 +287,11 @@ class ModelWrapper:
         if decoder_layers is not None:
             for layer_module in decoder_layers:
                 def _layer_hook(module, input, output, positions=last_positions):
-                    # output: tuple, first element is hidden_states [B, seq_len, D]
                     h_out = output[0] if isinstance(output, tuple) else output
                     h = torch.stack([h_out[b, positions[b], :] for b in range(h_out.shape[0])])
                     captured_hiddens.append(h.detach().cpu())
                 hooks.append(layer_module.register_forward_hook(_layer_hook))
 
-        # forward WITHOUT output_hidden_states — 메모리 절약 핵심
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -291,19 +300,138 @@ class ModelWrapper:
             return_dict=True,
         )
 
-        # hook 제거
         for h in hooks:
             h.remove()
 
-        # captured_hiddens를 logit_lens.record_from_last_token_hiddens()로 기록
         self.logit_lens.record_from_last_token_hiddens(
             captured_hiddens,
-            task_id=task_id,
+            task_ids=task_ids,
             tag=tag,
+            position=0,
         )
 
         del outputs, captured_hiddens
         torch.cuda.empty_cache()
+
+    @torch.no_grad()
+    def postgen_logit_lens(
+        self,
+        full_ids: torch.Tensor,
+        prompt_lengths: List[int],
+        *,
+        task_ids: List[int],
+        tag: str = "",
+        max_positions: int = 64,
+    ) -> None:
+        """
+        생성 완료 후, prompt+generated 전체 시퀀스를 forward하여
+        generated token 위치들의 layer-wise logit lens를 기록.
+
+        메모리 제어:
+        - max_positions: 기록할 최대 generated position 수 (기본 64).
+          generated tokens가 이보다 많으면 앞쪽 max_positions개만 기록.
+        - hook 기반으로 지정 위치만 캡처 → 전체 hidden 보유 안 함.
+        """
+        if self.logit_lens is None:
+            return
+
+        batch_size = full_ids.shape[0]
+        # 각 batch item별 기록할 position indices (prompt 이후 generated 위치)
+        gen_positions_per_item: List[List[int]] = []
+        max_gen_len = 0
+        for b in range(batch_size):
+            seq_len = full_ids.shape[1]
+            plen = prompt_lengths[b]
+            # generated 위치: plen, plen+1, ..., seq_len-1
+            # 하지만 position t의 hidden → t+1번째 토큰 예측이므로
+            # plen-1 위치가 position=0 (이미 prefill에서 기록)
+            # plen 위치가 position=1 (두 번째 generated token 예측)
+            gen_pos = list(range(plen, min(seq_len, plen + max_positions)))
+            gen_positions_per_item.append(gen_pos)
+            max_gen_len = max(max_gen_len, len(gen_pos))
+
+        if max_gen_len == 0:
+            return
+
+        # position별로 hook forward 수행 — 한 position씩 기록하면
+        # 전체를 한번에 forward하되 hook에서 특정 위치만 캡처
+
+        # 모든 batch item에서 기록할 위치의 합집합
+        all_positions_set = set()
+        for gp in gen_positions_per_item:
+            all_positions_set.update(gp)
+        all_positions_sorted = sorted(all_positions_set)
+
+        if not all_positions_sorted:
+            return
+
+        # 전체 forward 1회 + hook에서 필요한 위치만 캡처
+        # captured: dict[position] -> List[Tensor]  (layer별 [B, D])
+        captured_by_pos: Dict[int, List[torch.Tensor]] = {p: [] for p in all_positions_sorted}
+        hooks = []
+        positions_tensor = torch.tensor(all_positions_sorted, dtype=torch.long)
+
+        embed_layer = self.model.get_input_embeddings()
+        def _embed_hook_gen(module, input, output, pos_set=set(all_positions_sorted), cap=captured_by_pos):
+            for p in pos_set:
+                if p < output.shape[1]:
+                    cap[p].append(output[:, p, :].detach().cpu())
+        hooks.append(embed_layer.register_forward_hook(_embed_hook_gen))
+
+        decoder_layers = None
+        if hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
+            decoder_layers = self.model.model.layers
+        elif hasattr(self.model, "transformer") and hasattr(self.model.transformer, "h"):
+            decoder_layers = self.model.transformer.h
+
+        if decoder_layers is not None:
+            for layer_module in decoder_layers:
+                def _layer_hook_gen(module, input, output, pos_set=set(all_positions_sorted), cap=captured_by_pos):
+                    h_out = output[0] if isinstance(output, tuple) else output
+                    for p in pos_set:
+                        if p < h_out.shape[1]:
+                            cap[p].append(h_out[:, p, :].detach().cpu())
+                hooks.append(layer_module.register_forward_hook(_layer_hook_gen))
+
+        attention_mask = (full_ids != self.tokenizer.pad_token_id).long().to(self.device)
+        outputs = self.model(
+            input_ids=full_ids.to(self.device),
+            attention_mask=attention_mask,
+            use_cache=False,
+            output_hidden_states=False,
+            return_dict=True,
+        )
+
+        for h in hooks:
+            h.remove()
+        del outputs
+        torch.cuda.empty_cache()
+
+        # position별 기록
+        for pos in all_positions_sorted:
+            hiddens = captured_by_pos[pos]  # layer별 [B, D]
+            if not hiddens:
+                continue
+            # 각 batch item에 대해 이 position이 유효한지 확인
+            valid_task_ids = []
+            for b in range(batch_size):
+                if pos in gen_positions_per_item[b]:
+                    valid_task_ids.append(task_ids[b])
+                else:
+                    valid_task_ids.append(-1)  # 무효 표시
+
+            # position 번호: prefill이 position=0이므로, pos - prompt_len + 1
+            # batch item마다 prompt_len이 다를 수 있으므로 첫 번째 기준
+            gen_position = pos - prompt_lengths[0] + 1
+
+            self.logit_lens.record_from_last_token_hiddens(
+                hiddens,
+                task_ids=valid_task_ids,
+                tag=tag,
+                position=gen_position,
+            )
+
+        del captured_by_pos
 
     # ── chat helpers (unchanged) ──
     def render_chat(self, messages: List[Dict], add_generation_prompt: bool = True) -> str:
@@ -502,7 +630,7 @@ class ModelWrapper:
         *,
         latent_steps: int,
         past_key_values: Optional[Tuple] = None,
-        logit_lens_task_id: int = -1,
+        logit_lens_task_ids: Optional[List[int]] = None,
         logit_lens_tag: str = "",
     ) -> Tuple:
         if input_ids.dim() != 2:
@@ -534,11 +662,12 @@ class ModelWrapper:
         past = outputs.past_key_values
 
         # ── logit lens: initial forward ──
-        if self.logit_lens is not None and logit_lens_task_id >= 0:
+        if self.logit_lens is not None and logit_lens_task_ids is not None:
             self.logit_lens.record(
                 outputs.hidden_states,
-                task_id=logit_lens_task_id,
+                task_ids=logit_lens_task_ids,
                 position_idx=-1,
+                position=0,
                 tag=f"{logit_lens_tag}_prompt",
             )
 
@@ -584,11 +713,12 @@ class ModelWrapper:
             last_hidden = step_outputs.hidden_states[-1][:, -1, :]
 
             # ── logit lens: 각 latent step ──
-            if self.logit_lens is not None and logit_lens_task_id >= 0:
+            if self.logit_lens is not None and logit_lens_task_ids is not None:
                 self.logit_lens.record(
                     step_outputs.hidden_states,
-                    task_id=logit_lens_task_id,
+                    task_ids=logit_lens_task_ids,
                     position_idx=-1,
+                    position=step + 1,
                     tag=f"{logit_lens_tag}_latent_step{step}",
                 )
 
