@@ -195,6 +195,8 @@ def main():
                         help="Enable logit lens: decode top-5 tokens per layer and save to CSV")
     parser.add_argument("--logit_lens_dir", type=str, default="resource",
                         help="Directory to save logit lens CSV (default: resource/)")
+    parser.add_argument("--logit_lens_max_positions", type=int, default=64,
+                        help="Max number of generated token positions to analyze with logit lens (default: 64)")
 
     # memory optimization
     parser.add_argument("--max_gpu_mem_gb", type=float, default=0,
