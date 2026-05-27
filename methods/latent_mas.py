@@ -139,15 +139,20 @@ class LatentMASMethod:
                     active_ids = ids_row[mask_row.bool()].tolist()
                     wrapped_tokens_batch.append(self.model.tokenizer.convert_ids_to_tokens(active_ids))
 
-                # ── logit lens task id 계산 (batch 내 첫 번째 item 기준) ──
-                ll_task_id = self._logit_lens_task_counter if self.model.logit_lens else -1
+                # ── logit lens task ids 계산 ──
+                ll_task_ids = None
+                if self.model.logit_lens:
+                    ll_task_ids = list(range(
+                        self._logit_lens_task_counter,
+                        self._logit_lens_task_counter + batch_size,
+                    ))
 
                 past_kv = self.model.generate_latent_batch(
                     wrapped_ids,
                     attention_mask=wrapped_mask,
                     latent_steps=self.latent_steps,
                     past_key_values=past_kv,
-                    logit_lens_task_id=ll_task_id,
+                    logit_lens_task_ids=ll_task_ids,
                     logit_lens_tag=agent.name,
                 )
                 if self.sequential_info_only or self.latent_only:
