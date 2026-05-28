@@ -98,16 +98,47 @@ def js_divergence(a, b):
     p, q = softmax_dist(a.flatten().astype(np.float64)), softmax_dist(b.flatten().astype(np.float64))
     return float(jensenshannon(p, q, base=2) ** 2)
 
-# ── per-layer aggregate metrics (for prefill) ──
-def layer_metrics_agg(ka, kb, num_layers):
-    """Mean-pooled cosine & JS per layer."""
+# ── common-prefix detection (strips system prompt, <think>, etc.) ──
+def common_prefix_len(tokenizer, prompt_a, prompt_b):
+    """Number of leading tokens shared by two prompts (system msg, formatting, etc.)."""
+    ids_a = tokenizer(prompt_a, add_special_tokens=False)["input_ids"]
+    ids_b = tokenizer(prompt_b, add_special_tokens=False)["input_ids"]
+    for i in range(min(len(ids_a), len(ids_b))):
+        if ids_a[i] != ids_b[i]:
+            return i
+    return min(len(ids_a), len(ids_b))
+
+# ── per-layer prefill metrics (pairwise cosine on question-portion keys) ──
+def layer_metrics_prefill(ka, kb, num_layers, skip_a=0, skip_b=0):
+    """Mean pairwise cosine & JS between question-specific token keys.
+    ka/kb: dict[layer] → np [kv_heads, seq, head_dim].
+    skip_a/skip_b: shared-prefix tokens to exclude from metrics.
+    """
     res = []
     for l in range(num_layers):
         a, b = ka.get(l), kb.get(l)
         if a is None or b is None or a.size == 0 or b.size == 0:
             res.append((0., 1.)); continue
-        res.append((cosine_sim(a.mean(1).flatten(), b.mean(1).flatten()),
-                     js_divergence(a.mean(1).flatten(), b.mean(1).flatten())))
+        # strip shared prefix → question-specific portion
+        aq = a[:, skip_a:, :]   # [heads, n_a, dim]
+        bq = b[:, skip_b:, :]   # [heads, n_b, dim]
+        na, nb = aq.shape[1], bq.shape[1]
+        if na == 0 or nb == 0:
+            res.append((0., 1.)); continue
+        # flatten heads → [n, heads*dim]
+        af = aq.transpose(1, 0, 2).reshape(na, -1).astype(np.float64)
+        bf = bq.transpose(1, 0, 2).reshape(nb, -1).astype(np.float64)
+        # L2-normalise rows
+        af /= (np.linalg.norm(af, axis=1, keepdims=True) + 1e-12)
+        bf /= (np.linalg.norm(bf, axis=1, keepdims=True) + 1e-12)
+        # mean pairwise cosine  (not cosine of means)
+        cos_mat = af @ bf.T                       # [na, nb]
+        cos_mean = float(cos_mat.mean())
+        # JS on mean vectors of the question portion
+        a_mean = aq.mean(axis=1).flatten()
+        b_mean = bq.mean(axis=1).flatten()
+        js = js_divergence(a_mean, b_mean)
+        res.append((cos_mean, js))
     return res
 
 # ── per-step metrics (for decode) ──
@@ -397,14 +428,64 @@ def analyze_method(wrapper, method, items, args, plots_dir, model_tag):
                 return k.get("judger")
             return k
 
-        # ====== PREFILL metrics (aggregated per-layer) ======
+        # ── helper: render prompt text for common-prefix detection ──
+        def render_prompt(question):
+            if method == "baseline":
+                msgs = build_agent_messages_single_agent(question=question, args=args)
+            elif method == "text_mas":
+                # use judger prompt (context="" — prefix is the same for all versions)
+                if args.prompt == "hierarchical":
+                    msgs = build_agent_messages_hierarchical_text_mas(
+                        role="judger", question=question, context="",
+                        method="text_mas", args=args)
+                else:
+                    msgs = build_agent_messages_sequential_text_mas(
+                        role="judger", question=question, context="",
+                        method="text_mas", args=args)
+            elif method == "latent_mas":
+                if args.prompt == "sequential":
+                    msgs = build_agent_message_sequential_latent_mas(
+                        role="judger", question=question, context="",
+                        method="latent_mas", args=args)
+                else:
+                    msgs = build_agent_message_hierarchical_latent_mas(
+                        role="judger", question=question, context="",
+                        method="latent_mas", args=args)
+            txt = wrapper.render_chat(msgs, add_generation_prompt=True)
+            if args.think: txt += "<think>"
+            return txt
+
+        # ====== PREFILL metrics (pairwise cosine on question-specific tokens) ======
         orig_p = fk("original", P)
         if orig_p:
+            # pre-compute common prefix lengths per pair
+            prompt_cache = {}
+            for ver in VER_LABELS:
+                q = qs[ver]
+                if q: prompt_cache[ver] = render_prompt(q)
+
+            pair_skip = {}  # (va, vb) → common prefix token count
+            for va, vb in [("original","version1"),("original","version2"),
+                           ("original","version3"),("version1","version2"),
+                           ("version1","version3"),("version2","version3")]:
+                pa, pb = prompt_cache.get(va), prompt_cache.get(vb)
+                if pa and pb:
+                    pair_skip[(va,vb)] = common_prefix_len(wrapper.tokenizer, pa, pb)
+                else:
+                    pair_skip[(va,vb)] = 0
+
             pm = {}
-            for a,b in [("original","version1"),("original","version2"),("original","version3"),
-                        ("version1","version2"),("version1","version3"),("version2","version3")]:
+            for a,b in pair_skip:
                 ka,kb = fk(a,P), fk(b,P)
-                if ka and kb: pm[(a,b)] = layer_metrics_agg(ka, kb, num_layers)
+                skip = pair_skip[(a,b)]
+                if ka and kb:
+                    pm[(a,b)] = layer_metrics_prefill(ka, kb, num_layers,
+                                                       skip_a=skip, skip_b=skip)
+                    if a == "original" and b == "version1" and ti == 0:
+                        total_a = next(iter(ka.values())).shape[1] if ka else 0
+                        print(f"    prefix-skip={skip}  total_tokens={total_a}  "
+                              f"question-only={total_a - skip}")
+
             for l in range(num_layers):
                 row = {"task_id":tid, "layer":l}
                 for v in ["version1","version2","version3"]:
