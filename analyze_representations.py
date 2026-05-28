@@ -375,73 +375,86 @@ def dim_reduce_plots(vecs, num_layers, out_tpl, title):
 def plot_heatmap(act, path, title):
     fig, ax = plt.subplots(figsize=(max(6, act.shape[1]*0.6), max(8, act.shape[0]*0.3)))
     im = ax.imshow(act, aspect="auto", cmap="YlOrRd", vmin=0, vmax=1, interpolation="nearest")
-    ax.set_xlabel("Head"); ax.set_ylabel("Layer"); ax.set_title(title)
+    ax.set_xlabel("KV Head (GQA)"); ax.set_ylabel("Layer"); ax.set_title(title)
     ax.set_yticks(range(act.shape[0])); ax.set_xticks(range(act.shape[1]))
     ax.tick_params(labelsize=7); plt.colorbar(im, ax=ax, shrink=0.8)
     plt.tight_layout(); fig.savefig(path, dpi=150, bbox_inches="tight"); plt.close(fig)
     print(f"    → {path}")
 
 # =====================================================================
-# Main analysis loop
+# Main analysis loop  (single-pass: prefill + decode extracted together)
 # =====================================================================
 def analyze_method(wrapper, method, items, args, plots_dir, model_tag):
     num_layers = wrapper.model.config.num_hidden_layers
-    num_heads = getattr(wrapper.model.config, "num_key_value_heads",
-                        wrapper.model.config.num_attention_heads)
+    num_kv_heads = getattr(wrapper.model.config, "num_key_value_heads",
+                           wrapper.model.config.num_attention_heads)
+    num_q_heads = wrapper.model.config.num_attention_heads
+    gqa_ratio = num_q_heads // num_kv_heads
 
-    for phase in ["prefill", "decode"]:
-        prefix = f"{method}_{args.task}_{model_tag}_{phase}"
-        csv_rows = []
-        act_acc  = {v: np.zeros((num_layers, num_heads)) for v in VER_LABELS}
-        act_n    = {v: 0 for v in VER_LABELS}
-        pca_vecs = defaultdict(list)
-        do_decode = (phase == "decode")
+    print(f"  GQA: {num_q_heads} query heads → {num_kv_heads} KV heads  (ratio {gqa_ratio}:1)")
 
-        for ti, item in enumerate(items):
-            tid = item["task_id"]
-            qs = {"original": item["question"],
-                  "version1": item.get("version1",""),
-                  "version2": item.get("version2",""),
-                  "version3": item.get("version3","")}
-            print(f"  [{phase}] task {tid}  ({ti+1}/{len(items)})")
+    # ── per-phase accumulators ──
+    phases = ["prefill", "decode"]
+    csv_rows   = {ph: [] for ph in phases}
+    act_acc    = {ph: {v: np.zeros((num_layers, num_kv_heads)) for v in VER_LABELS} for ph in phases}
+    act_n      = {ph: {v: 0 for v in VER_LABELS} for ph in phases}
+    pca_vecs   = {ph: defaultdict(list) for ph in phases}
 
-            all_keys = {}     # ver → keys or {agent→keys}
-            for ver in VER_LABELS:
-                q = qs[ver]
-                if not q:
-                    all_keys[ver] = None; continue
-                if method == "baseline":
-                    pk, dk = extract_baseline(wrapper, q, args, do_decode)
-                    all_keys[ver] = dk if do_decode else pk
-                elif method == "text_mas":
-                    pka, dk = extract_text_mas(wrapper, q, args, do_decode)
-                    all_keys[ver] = dk if do_decode else pka
-                elif method == "latent_mas":
-                    pk, dk = extract_latent_mas(wrapper, q, args, do_decode)
-                    all_keys[ver] = dk if do_decode else pk
-                gc.collect(); torch.cuda.empty_cache()
+    # ── single loop over tasks: extract prefill + decode at once ──
+    for ti, item in enumerate(items):
+        tid = item["task_id"]
+        qs = {"original": item["question"],
+              "version1": item.get("version1",""),
+              "version2": item.get("version2",""),
+              "version3": item.get("version3","")}
+        print(f"  task {tid}  ({ti+1}/{len(items)})")
 
-            # ── get "final" keys (judger for text_mas prefill) ──
-            def final(ver):
-                k = all_keys.get(ver)
-                if k is None: return None
-                if method == "text_mas" and phase == "prefill" and isinstance(k, dict):
-                    return k.get("judger")
-                return k
+        # Extract BOTH prefill and decode keys in one pass per version
+        all_prefill = {}   # ver → keys (or {agent→keys} for text_mas)
+        all_decode  = {}   # ver → keys
+        for ver in VER_LABELS:
+            q = qs[ver]
+            if not q:
+                all_prefill[ver] = None
+                all_decode[ver]  = None
+                continue
+            if method == "baseline":
+                pk, dk = extract_baseline(wrapper, q, args, do_decode=True)
+            elif method == "text_mas":
+                pk, dk = extract_text_mas(wrapper, q, args, do_decode=True)
+            elif method == "latent_mas":
+                pk, dk = extract_latent_mas(wrapper, q, args, do_decode=True)
+            all_prefill[ver] = pk
+            all_decode[ver]  = dk
+            gc.collect(); torch.cuda.empty_cache()
 
-            orig = final("original")
-            if orig is None: continue
+        # ── helper: get final-agent keys for metric computation ──
+        def final_keys(ver, phase):
+            src = all_prefill if phase == "prefill" else all_decode
+            k = src.get(ver)
+            if k is None:
+                return None
+            if method == "text_mas" and phase == "prefill" and isinstance(k, dict):
+                return k.get("judger")
+            return k
 
-            # ── pre-compute pair metrics ──
+        # ── compute metrics for BOTH phases from single extraction ──
+        for ph in phases:
+            prefix = f"{method}_{args.task}_{model_tag}_{ph}"
+            orig = final_keys("original", ph)
+            if orig is None:
+                continue
+
+            # pre-compute pair metrics
             pm = {}
             for a, b in [("original","version1"),("original","version2"),
                          ("original","version3"),("version1","version2"),
                          ("version1","version3"),("version2","version3")]:
-                ka, kb = final(a), final(b)
+                ka, kb = final_keys(a, ph), final_keys(b, ph)
                 if ka and kb:
                     pm[(a,b)] = layer_metrics(ka, kb, num_layers)
 
-            # ── CSV rows ──
+            # CSV rows
             for l in range(num_layers):
                 row = {"task_id": tid, "layer": l}
                 for v in ["version1","version2","version3"]:
@@ -454,21 +467,21 @@ def analyze_method(wrapper, method, items, args, plots_dir, model_tag):
                     m = pm.get((va, vb))
                     row[f"{lbl}_cos"] = round(m[l][0], 3) if m else float("nan")
                     row[f"{lbl}_js"]  = round(m[l][1], 3) if m else float("nan")
-                csv_rows.append(row)
+                csv_rows[ph].append(row)
 
-            # ── activation accumulation (running mean) ──
+            # activation (running mean)
             for ver in VER_LABELS:
-                fk = final(ver)
+                fk = final_keys(ver, ph)
                 if fk:
-                    a = activation_scores(fk, num_layers, num_heads)
-                    n = act_n[ver]
-                    act_acc[ver] = (act_acc[ver] * n + a) / (n + 1)
-                    act_n[ver] += 1
+                    a = activation_scores(fk, num_layers, num_kv_heads)
+                    n = act_n[ph][ver]
+                    act_acc[ph][ver] = (act_acc[ph][ver] * n + a) / (n + 1)
+                    act_n[ph][ver] += 1
 
-            # ── PCA/t-SNE vectors (subsampled) ──
-            if method == "text_mas" and phase == "prefill":
+            # PCA/t-SNE subsampled vectors
+            if method == "text_mas" and ph == "prefill":
                 for ver in VER_LABELS:
-                    k_agents = all_keys.get(ver)
+                    k_agents = all_prefill.get(ver)
                     if not isinstance(k_agents, dict): continue
                     for ag_role, ag_keys in k_agents.items():
                         alpha = AGENT_ALPHA.get(ag_role, 0.5)
@@ -477,14 +490,15 @@ def analyze_method(wrapper, method, items, args, plots_dir, model_tag):
                             k = ag_keys.get(l)
                             if k is None or k.size == 0: continue
                             seq = k.shape[1]
+                            # GQA: k shape = [kv_heads, seq, head_dim]
                             flat = k.transpose(1,0,2).reshape(seq, -1)
                             if flat.shape[0] > MAX_PCA_TOKENS:
                                 idx = np.random.choice(flat.shape[0], MAX_PCA_TOKENS, replace=False)
                                 flat = flat[idx]
-                            pca_vecs[l].append((flat, col, alpha, f"{ver}_{ag_role}"))
+                            pca_vecs[ph][l].append((flat, col, alpha, f"{ver}_{ag_role}"))
             else:
                 for ver in VER_LABELS:
-                    fk = final(ver)
+                    fk = final_keys(ver, ph)
                     if fk is None: continue
                     col = VER_COLORS[ver]
                     for l in range(num_layers):
@@ -495,31 +509,38 @@ def analyze_method(wrapper, method, items, args, plots_dir, model_tag):
                         if flat.shape[0] > MAX_PCA_TOKENS:
                             idx = np.random.choice(flat.shape[0], MAX_PCA_TOKENS, replace=False)
                             flat = flat[idx]
-                        pca_vecs[l].append((flat, col, 0.6, ver))
+                        pca_vecs[ph][l].append((flat, col, 0.6, ver))
 
-            del all_keys; gc.collect(); torch.cuda.empty_cache()
+        # free all keys for this task
+        del all_prefill, all_decode
+        gc.collect(); torch.cuda.empty_cache()
 
-        # ── write CSV ──
-        csv_path = os.path.join(plots_dir, f"{prefix}_record.csv")
-        if csv_rows:
+    # ── write outputs for both phases ──
+    for ph in phases:
+        prefix = f"{method}_{args.task}_{model_tag}_{ph}"
+
+        # CSV
+        rows = csv_rows[ph]
+        if rows:
+            csv_path = os.path.join(plots_dir, f"{prefix}_record.csv")
             with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=list(csv_rows[0].keys()))
-                w.writeheader(); w.writerows(csv_rows)
+                w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                w.writeheader(); w.writerows(rows)
             print(f"  CSV → {csv_path}")
 
-        # ── PCA / t-SNE ──
+        # PCA / t-SNE
         tpl = os.path.join(plots_dir, f"{prefix}_{{tag}}_{{layers}}.png")
-        dim_reduce_plots(pca_vecs, num_layers, tpl, f"{method} {phase}")
+        dim_reduce_plots(pca_vecs[ph], num_layers, tpl, f"{method} {ph}")
 
-        # ── activation heatmaps ──
+        # activation heatmaps
         for ver in VER_LABELS:
-            a = act_acc[ver]
+            a = act_acc[ph][ver]
             mx = a.max()
             scaled = a / (mx + 1e-12) if mx > 0 else a
             p = os.path.join(plots_dir, f"{prefix}_activation_{ver}.png")
-            plot_heatmap(scaled, p, f"{method} {phase} — {ver}")
+            plot_heatmap(scaled, p, f"{method} {ph} — {ver}")
 
-        del pca_vecs, csv_rows; gc.collect()
+    del csv_rows, pca_vecs, act_acc; gc.collect()
 
 
 # =====================================================================
