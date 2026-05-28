@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 """
-analyze_representations.py  (v2 — uses original project code directly)
-=====================================================================
-Place this file in the project root (alongside models.py, prompts.py).
-It imports ModelWrapper and the exact prompt builders so representations
-match the actual experiments.  No modifications to original files needed.
+analyze_representations.py  (v3)
+================================
+Uses original project code (models.py, prompts.py) directly.
+No modifications to original files needed.
 
-Outputs → ./plots/
-  {method}_{task}_{model}_{prefill|decode}_{pca|tsne|activation|record}...
-
-Usage:
-  python analyze_representations.py \
-      --data_path ./paraphrased_data/gpqa_paraphrased.jsonl \
-      --task gpqa --model_name Qwen/Qwen3-8B --device cuda \
-      --methods baseline text_mas latent_mas \
-      --prompt sequential --latent_steps 10 --max_tasks 3
+Fixes in v3:
+ - GQA-aware: key cache is [kv_heads, seq, head_dim], heatmap labels explicit
+ - Single-pass: prefill+decode extracted together (no double-prefill)
+ - Decode CSV: per-step × per-layer rows (decode_step column)
+ - Full generation via generate_text_batch, keys extracted from returned past
+ - Activation heatmap: per-layer normalization for visibility
+ - text_mas agent alpha: wider spread (1.0 / 0.55 / 0.25 / 0.08)
 """
 import argparse, csv, gc, json, math, os, re, sys
 from collections import namedtuple, defaultdict
@@ -23,14 +20,13 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-import matplotlib
-matplotlib.use("Agg")
+import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from scipy.spatial.distance import jensenshannon
 
-# ── import from the ORIGINAL project code ────────────────────────────
+# ── project imports ──────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from models import ModelWrapper, _past_length
 from prompts import (
@@ -41,7 +37,7 @@ from prompts import (
     build_agent_message_hierarchical_latent_mas,
 )
 
-# ── agents (same as methods/__init__.py) ─────────────────────────────
+# ── agents ───────────────────────────────────────────────────────────
 Agent = namedtuple("Agent", ["name", "role"])
 AGENTS = [Agent("Planner","planner"), Agent("Critic","critic"),
           Agent("Refiner","refiner"), Agent("Judger","judger")]
@@ -49,50 +45,48 @@ HIER_NAME = {"Planner":"Math Agent","Critic":"Science Agent",
              "Refiner":"Code Agent","Judger":"Task Summrizer"}
 
 # ── visual constants ─────────────────────────────────────────────────
-AGENT_ALPHA = {"planner":0.9,"critic":0.7,"refiner":0.5,"judger":0.3}
+AGENT_ALPHA = {"planner":1.0, "critic":0.55, "refiner":0.25, "judger":0.08}
 VER_LABELS  = ["original","version1","version2","version3"]
 VER_COLORS  = {"original":(1,0,0),"version1":(0.6,0,0.8),
                "version2":(0,0.7,0),"version3":(0,0.3,1)}
 MAX_PCA_TOKENS = 200
-DECODE_STEPS   = 80
 
 # =====================================================================
 # Helpers
 # =====================================================================
-def strip_thinking(text: str) -> str:
+def strip_thinking(text):
     text = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL)
     text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL)
     return text.strip()
 
-def extract_keys_from_past(past, to_numpy=True):
-    """dict[layer] → np.array [kv_heads, seq_len, head_dim]"""
-    keys = {}
-    if hasattr(past, "key_cache"):            # DynamicCache
-        for i, k in enumerate(past.key_cache):
-            t = k[0].detach().cpu().float()
-            keys[i] = t.numpy() if to_numpy else t
-    else:                                      # legacy tuple
-        for i, layer in enumerate(past):
-            k = layer[0] if isinstance(layer, (tuple, list)) else layer
-            t = k[0].detach().cpu().float()
-            keys[i] = t.numpy() if to_numpy else t
-    return keys
-
-def extract_last_key(past, num_layers):
-    """Extract only the last-position key per layer (one decode step)."""
+def extract_keys_from_past(past, num_layers=None):
+    """Full key extraction: dict[layer] → np [kv_heads, seq, head_dim]."""
     keys = {}
     if hasattr(past, "key_cache"):
-        for l in range(num_layers):
-            keys[l] = past.key_cache[l][0, :, -1:, :].detach().cpu().float().numpy()
+        n = len(past.key_cache) if num_layers is None else num_layers
+        for i in range(n):
+            keys[i] = past.key_cache[i][0].detach().cpu().float().numpy()
     else:
-        for l in range(num_layers):
-            kl = past[l][0] if isinstance(past[l], (tuple,list)) else past[l]
-            keys[l] = kl[0, :, -1:, :].detach().cpu().float().numpy()
+        n = len(past) if num_layers is None else num_layers
+        for i in range(n):
+            kl = past[i][0] if isinstance(past[i], (tuple, list)) else past[i]
+            keys[i] = kl[0].detach().cpu().float().numpy()
+    return keys
+
+def extract_keys_slice(past, start, end, num_layers):
+    """Extract keys for positions [start:end] only — memory efficient."""
+    keys = {}
+    if hasattr(past, "key_cache"):
+        for l in range(min(num_layers, len(past.key_cache))):
+            keys[l] = past.key_cache[l][0, :, start:end, :].detach().cpu().float().numpy()
+    else:
+        for l in range(min(num_layers, len(past))):
+            kl = past[l][0] if isinstance(past[l], (tuple, list)) else past[l]
+            keys[l] = kl[0, :, start:end, :].detach().cpu().float().numpy()
     return keys
 
 def softmax_dist(v):
-    v = v - v.max()
-    e = np.exp(v)
+    v = v - v.max(); e = np.exp(v)
     return e / (e.sum() + 1e-12)
 
 def cosine_sim(a, b):
@@ -101,89 +95,113 @@ def cosine_sim(a, b):
     return float(np.dot(af, bf) / d) if d > 1e-12 else 0.0
 
 def js_divergence(a, b):
-    p = softmax_dist(a.flatten().astype(np.float64))
-    q = softmax_dist(b.flatten().astype(np.float64))
+    p, q = softmax_dist(a.flatten().astype(np.float64)), softmax_dist(b.flatten().astype(np.float64))
     return float(jensenshannon(p, q, base=2) ** 2)
 
-def sample_next(logits, temperature=0.6, top_p=0.95):
-    if temperature < 1e-8:
-        return logits.argmax(dim=-1)
-    logits = logits / temperature
-    probs = torch.softmax(logits, dim=-1)
-    sp, si = torch.sort(probs, descending=True)
-    mask = (torch.cumsum(sp, -1) - sp) > top_p
-    sp[mask] = 0.0
-    sp /= sp.sum()
-    return si[torch.multinomial(sp, 1)].squeeze(-1)
+# ── per-layer aggregate metrics (for prefill) ──
+def layer_metrics_agg(ka, kb, num_layers):
+    """Mean-pooled cosine & JS per layer."""
+    res = []
+    for l in range(num_layers):
+        a, b = ka.get(l), kb.get(l)
+        if a is None or b is None or a.size == 0 or b.size == 0:
+            res.append((0., 1.)); continue
+        res.append((cosine_sim(a.mean(1).flatten(), b.mean(1).flatten()),
+                     js_divergence(a.mean(1).flatten(), b.mean(1).flatten())))
+    return res
+
+# ── per-step metrics (for decode) ──
+def layer_metrics_step(ka, kb, layer, step):
+    """Single (cos, js) for one layer, one decode step."""
+    a, b = ka.get(layer), kb.get(layer)
+    if a is None or b is None:
+        return (0., 1.)
+    if a.shape[1] <= step or b.shape[1] <= step:
+        return (0., 1.)
+    av = a[:, step, :].flatten()
+    bv = b[:, step, :].flatten()
+    return (cosine_sim(av, bv), js_divergence(av, bv))
+
+def activation_scores(keys, num_layers, num_kv_heads):
+    """[num_layers, num_kv_heads] mean L2 norm of key vectors."""
+    act = np.zeros((num_layers, num_kv_heads), dtype=np.float64)
+    for l in range(num_layers):
+        k = keys.get(l)
+        if k is None or k.size == 0: continue
+        norms = np.linalg.norm(k, axis=2)          # [heads, seq]
+        act[l, :min(num_kv_heads, norms.shape[0])] = norms.mean(axis=1)[:num_kv_heads]
+    return act
 
 # =====================================================================
-# Step-by-step decode (extracts per-step keys)
+# Key extraction per method  (single-pass: generate → slice keys)
 # =====================================================================
 @torch.no_grad()
-def step_decode(wrapper: ModelWrapper, past, initial_logits: torch.Tensor,
-                n_steps: int, num_layers: int, temperature=0.6, top_p=0.95):
-    """Returns dict[layer] → np.array [kv_heads, n_decoded, head_dim]."""
-    logits = initial_logits  # [vocab]
-    decode_keys = {l: [] for l in range(num_layers)}
-    device = wrapper.device
+def _gen_and_extract(wrapper, ids, mask, max_new_tokens, n_analysis,
+                     num_layers, past_kv=None, temperature=0.6, top_p=0.95):
+    """Generate full response, then extract prefill+decode keys from returned past.
+    Returns (prefill_keys, decode_keys, generated_text)."""
+    acc_len = _past_length(past_kv) if past_kv else 0
+    prompt_len = ids.shape[1]
 
-    for _ in range(n_steps):
-        tok = sample_next(logits, temperature, top_p)
-        if tok.item() == wrapper.tokenizer.eos_token_id:
-            break
-        pl = _past_length(past)
-        dec_mask = torch.ones((1, pl + 1), dtype=torch.long, device=device)
-        out = wrapper.model(tok.view(1, 1), attention_mask=dec_mask,
-                            past_key_values=past, use_cache=True, return_dict=True)
-        past = out.past_key_values
-        logits = out.logits[0, -1, :]
-        lk = extract_last_key(past, num_layers)
-        for l in range(num_layers):
-            decode_keys[l].append(lk[l])
-        del lk
+    gens, gen_past = wrapper.generate_text_batch(
+        ids, mask, max_new_tokens=max_new_tokens,
+        temperature=temperature, top_p=top_p,
+        past_key_values=past_kv)
 
-    result = {}
-    for l in range(num_layers):
-        if decode_keys[l]:
-            result[l] = np.concatenate(decode_keys[l], axis=1)
+    gen_text = gens[0]
+    prefill_keys = None
+    decode_keys  = None
+
+    if gen_past is not None:
+        total_in_cache = _past_length(gen_past)
+        decode_start = acc_len + prompt_len
+        gen_len = total_in_cache - decode_start
+        n_dec = min(n_analysis, gen_len)
+
+        prefill_keys = extract_keys_slice(gen_past, 0, decode_start, num_layers)
+        decode_keys  = extract_keys_slice(gen_past, decode_start,
+                                           decode_start + n_dec, num_layers)
+        del gen_past
+    else:
+        # Fallback: re-forward prompt + first n_analysis gen tokens
+        gen_ids = wrapper.tokenize_text(gen_text)
+        n_dec = min(n_analysis, gen_ids.shape[1])
+        analysis_ids = torch.cat([ids, gen_ids[:, :n_dec]], dim=1)
+        analysis_mask = torch.ones_like(analysis_ids)
+        if past_kv is not None:
+            pl = _past_length(past_kv)
+            pm = torch.ones((1, pl), dtype=analysis_mask.dtype, device=wrapper.device)
+            analysis_mask = torch.cat([pm, analysis_mask], dim=1)
+            cpos = torch.arange(pl, pl + analysis_ids.shape[1],
+                                dtype=torch.long, device=wrapper.device)
         else:
-            head_dim = wrapper.model.config.hidden_size // wrapper.model.config.num_attention_heads
-            n_kv = getattr(wrapper.model.config,"num_key_value_heads",
-                           wrapper.model.config.num_attention_heads)
-            result[l] = np.zeros((n_kv, 0, head_dim), dtype=np.float32)
-    del past; torch.cuda.empty_cache()
-    return result
+            cpos = None
+        out = wrapper.model(analysis_ids, attention_mask=analysis_mask,
+                            past_key_values=past_kv, use_cache=True,
+                            cache_position=cpos, return_dict=True)
+        decode_start = acc_len + prompt_len
+        prefill_keys = extract_keys_slice(out.past_key_values, 0, decode_start, num_layers)
+        decode_keys  = extract_keys_slice(out.past_key_values, decode_start,
+                                           decode_start + n_dec, num_layers)
+        del out
 
-# =====================================================================
-# Method-specific key extraction  (mirrors original method code exactly)
-# =====================================================================
+    torch.cuda.empty_cache()
+    return prefill_keys, decode_keys, gen_text
 
 # ── baseline ─────────────────────────────────────────────────────────
 @torch.no_grad()
-def extract_baseline(wrapper, question, args, do_decode=True):
+def extract_baseline(wrapper, question, args, num_layers):
     msgs = build_agent_messages_single_agent(question=question, args=args)
     _, ids, mask, _ = wrapper.prepare_chat_input(msgs)
-    num_layers = wrapper.model.config.num_hidden_layers
-
-    # prefill
-    out = wrapper.model(ids, attention_mask=mask, use_cache=True,
-                        output_hidden_states=False, return_dict=True)
-    prefill_keys = extract_keys_from_past(out.past_key_values)
-    decode_keys = None
-    if do_decode:
-        decode_keys = step_decode(wrapper, out.past_key_values,
-                                   out.logits[0, -1, :], DECODE_STEPS,
-                                   num_layers, args.temperature, args.top_p)
-    del out; torch.cuda.empty_cache()
-    return prefill_keys, decode_keys
+    return _gen_and_extract(wrapper, ids, mask, args.max_new_tokens,
+                            args.decode_analysis_steps, num_layers,
+                            temperature=args.temperature, top_p=args.top_p)
 
 # ── text_mas ─────────────────────────────────────────────────────────
 @torch.no_grad()
-def extract_text_mas(wrapper, question, args, do_decode=True):
+def extract_text_mas(wrapper, question, args, num_layers):
     context = ""
     prefill_per_agent = {}
-    decode_keys = None
-    num_layers = wrapper.model.config.num_hidden_layers
 
     for ag in AGENTS:
         if args.prompt == "hierarchical":
@@ -194,42 +212,44 @@ def extract_text_mas(wrapper, question, args, do_decode=True):
             msgs = build_agent_messages_sequential_text_mas(
                 role=ag.role, question=question, context=context,
                 method="text_mas", args=args)
-
         _, ids, mask, _ = wrapper.prepare_chat_input(msgs)
 
-        # ---- prefill (every agent) ----
-        out = wrapper.model(ids, attention_mask=mask, use_cache=True,
-                            output_hidden_states=False, return_dict=True)
-        prefill_per_agent[ag.role] = extract_keys_from_past(out.past_key_values)
-
         if ag.role != "judger":
-            # generate text for context
-            gen, _ = wrapper.generate_text_batch(
-                ids, mask,
-                max_new_tokens=args.gen_max_tokens,
+            # intermediate agent: generate for context + extract prefill
+            gens, ag_past = wrapper.generate_text_batch(
+                ids, mask, max_new_tokens=args.gen_max_tokens,
                 temperature=args.temperature, top_p=args.top_p)
-            text_out = strip_thinking(gen[0])
-            if args.prompt == "hierarchical":
-                formatted = f"[{HIER_NAME[ag.name]}]:\n{text_out}\n\n"
+            text_out = strip_thinking(gens[0])
+
+            # extract prefill keys (prompt portion only)
+            prompt_len = ids.shape[1]
+            if ag_past is not None:
+                prefill_per_agent[ag.role] = extract_keys_slice(
+                    ag_past, 0, prompt_len, num_layers)
+                del ag_past
             else:
-                formatted = f"[{ag.name}]:\n{text_out}\n\n"
-            context += formatted
-            del out; torch.cuda.empty_cache()
+                out = wrapper.model(ids, attention_mask=mask, use_cache=True, return_dict=True)
+                prefill_per_agent[ag.role] = extract_keys_from_past(out.past_key_values, num_layers)
+                del out
+
+            if args.prompt == "hierarchical":
+                context += f"[{HIER_NAME[ag.name]}]:\n{text_out}\n\n"
+            else:
+                context += f"[{ag.name}]:\n{text_out}\n\n"
+            torch.cuda.empty_cache()
         else:
-            # ---- decode (judger only) ----
-            if do_decode:
-                decode_keys = step_decode(
-                    wrapper, out.past_key_values, out.logits[0,-1,:],
-                    DECODE_STEPS, num_layers, args.temperature, args.top_p)
-            del out; torch.cuda.empty_cache()
+            pk, dk, _ = _gen_and_extract(
+                wrapper, ids, mask, args.max_new_tokens,
+                args.decode_analysis_steps, num_layers,
+                temperature=args.temperature, top_p=args.top_p)
+            prefill_per_agent[ag.role] = pk
 
-    return prefill_per_agent, decode_keys
+    return prefill_per_agent, dk
 
-# ── latent_mas (mirrors LatentMASMethod.run_batch exactly) ───────────
+# ── latent_mas ───────────────────────────────────────────────────────
 @torch.no_grad()
-def extract_latent_mas(wrapper, question, args, do_decode=True):
+def extract_latent_mas(wrapper, question, args, num_layers):
     accumulated_past = None
-    num_layers = wrapper.model.config.num_hidden_layers
     device = wrapper.device
 
     for ag in AGENTS:
@@ -241,140 +261,86 @@ def extract_latent_mas(wrapper, question, args, do_decode=True):
             msgs = build_agent_message_hierarchical_latent_mas(
                 role=ag.role, question=question, context="",
                 method="latent_mas", args=args)
-
         prompt_text = wrapper.render_chat(msgs, add_generation_prompt=True)
 
         if ag.role != "judger":
-            # wrap with <think> if needed (same as original)
             wrapped = f"{prompt_text}<think>" if args.think else prompt_text
-            enc = wrapper.tokenizer(wrapped, return_tensors="pt",
-                                    add_special_tokens=False)
+            enc = wrapper.tokenizer(wrapped, return_tensors="pt", add_special_tokens=False)
             w_ids = enc["input_ids"].to(device)
             w_mask = enc["attention_mask"].to(device)
-
             accumulated_past = wrapper.generate_latent_batch(
-                w_ids, attention_mask=w_mask,
-                latent_steps=args.latent_steps,
+                w_ids, w_mask, latent_steps=args.latent_steps,
                 past_key_values=accumulated_past)
         else:
             judger_text = f"{prompt_text}<think>" if args.think else prompt_text
-            enc = wrapper.tokenizer(judger_text, return_tensors="pt",
-                                    add_special_tokens=False)
+            enc = wrapper.tokenizer(judger_text, return_tensors="pt", add_special_tokens=False)
             j_ids = enc["input_ids"].to(device)
             j_mask = enc["attention_mask"].to(device)
-
-            past_for_dec = accumulated_past if args.latent_steps > 0 else None
-            # build attention mask including accumulated past
-            if past_for_dec is not None:
-                pl = _past_length(past_for_dec)
-                pm = torch.ones((1, pl), dtype=j_mask.dtype, device=device)
-                full_mask = torch.cat([pm, j_mask], dim=1)
-            else:
-                full_mask = j_mask
-
-            out = wrapper.model(j_ids, attention_mask=full_mask,
-                                past_key_values=past_for_dec,
-                                use_cache=True, output_hidden_states=False,
-                                return_dict=True)
-            prefill_keys = extract_keys_from_past(out.past_key_values)
-            decode_keys = None
-            if do_decode:
-                decode_keys = step_decode(
-                    wrapper, out.past_key_values, out.logits[0,-1,:],
-                    DECODE_STEPS, num_layers, args.temperature, args.top_p)
-            del out; torch.cuda.empty_cache()
+            past_for_gen = accumulated_past if args.latent_steps > 0 else None
+            pk, dk, _ = _gen_and_extract(
+                wrapper, j_ids, j_mask, args.max_new_tokens,
+                args.decode_analysis_steps, num_layers,
+                past_kv=past_for_gen,
+                temperature=args.temperature, top_p=args.top_p)
 
     del accumulated_past; torch.cuda.empty_cache()
-    return prefill_keys, decode_keys
-
-# =====================================================================
-# Metrics
-# =====================================================================
-def layer_metrics(ka, kb, num_layers):
-    """Returns [(cos, js)] per layer."""
-    res = []
-    for l in range(num_layers):
-        a, b = ka.get(l), kb.get(l)
-        if a is None or b is None or a.size == 0 or b.size == 0:
-            res.append((0.0, 1.0)); continue
-        am = a.mean(axis=1).flatten(); bm = b.mean(axis=1).flatten()
-        res.append((cosine_sim(am, bm), js_divergence(am, bm)))
-    return res
-
-def activation_scores(keys, num_layers, num_heads):
-    act = np.zeros((num_layers, num_heads), dtype=np.float64)
-    for l in range(num_layers):
-        k = keys.get(l)
-        if k is None or k.size == 0: continue
-        norms = np.linalg.norm(k, axis=2)  # [heads, seq]
-        act[l, :min(num_heads, norms.shape[0])] = norms.mean(axis=1)[:num_heads]
-    return act
+    return pk, dk
 
 # =====================================================================
 # Plotting
 # =====================================================================
 def plot_scatter_grid(layer_data, num_layers, out_tpl, title_prefix, use_tsne):
     layers_per_fig = 16
-    for fig_i in range(math.ceil(num_layers / layers_per_fig)):
-        s = fig_i * layers_per_fig
-        e = min(s + layers_per_fig, num_layers)
+    for fi in range(math.ceil(num_layers / layers_per_fig)):
+        s, e = fi*layers_per_fig, min((fi+1)*layers_per_fig, num_layers)
         fig, axes = plt.subplots(4, 4, figsize=(20, 20))
         tag = "t-SNE" if use_tsne else "PCA"
         fig.suptitle(f"{title_prefix} ({tag}) — Layers {s}–{e-1}", fontsize=14)
         for pos in range(16):
-            ax = axes[pos//4][pos%4]
-            li = s + pos
+            ax = axes[pos//4][pos%4]; li = s+pos
             if li >= num_layers or li not in layer_data:
                 ax.set_visible(False); continue
             ax.set_title(f"Layer {li}", fontsize=9)
             for pts, col, alpha, label in layer_data[li]:
-                if len(pts) == 0: continue
-                ax.scatter(pts[:,0], pts[:,1], c=[col], alpha=alpha, s=6, label=label)
+                if len(pts): ax.scatter(pts[:,0], pts[:,1], c=[col], alpha=alpha, s=6, label=label)
             ax.tick_params(labelsize=6)
-        # deduplicated legend
         seen = {}
-        for pos in range(min(e-s, 16)):
-            ax = axes[pos//4][pos%4]
-            for h, lb in zip(*ax.get_legend_handles_labels()):
+        for pos in range(min(e-s,16)):
+            for h, lb in zip(*axes[pos//4][pos%4].get_legend_handles_labels()):
                 if lb not in seen: seen[lb] = h
-        if seen:
-            fig.legend(seen.values(), seen.keys(), loc="upper right", fontsize=7)
+        if seen: fig.legend(seen.values(), seen.keys(), loc="upper right", fontsize=7)
         plt.tight_layout(rect=[0,0,1,0.96])
         t = "tsne" if use_tsne else "pca"
-        p = out_tpl.replace("{tag}", t).replace("{layers}", f"layers{s:02d}-{e-1:02d}")
-        fig.savefig(p, dpi=150, bbox_inches="tight"); plt.close(fig)
-        print(f"    → {p}")
-
+        p = out_tpl.replace("{tag}",t).replace("{layers}",f"layers{s:02d}-{e-1:02d}")
+        fig.savefig(p, dpi=150, bbox_inches="tight"); plt.close(fig); print(f"    → {p}")
 
 def dim_reduce_plots(vecs, num_layers, out_tpl, title):
     for use_tsne in [False, True]:
         ld = {}
         for l in range(num_layers):
             items = vecs.get(l, [])
-            all_pts = [v[0] for v in items if len(v[0]) > 0]
+            all_pts = [v[0] for v in items if len(v[0])>0]
             if not all_pts: continue
             combined = np.vstack(all_pts)
             if combined.shape[0] < 4: continue
             try:
                 if use_tsne:
-                    proj = TSNE(n_components=2, perplexity=max(2, min(30, combined.shape[0]-1)),
+                    proj = TSNE(n_components=2, perplexity=max(2,min(30,combined.shape[0]-1)),
                                 random_state=42, max_iter=500).fit_transform(combined)
                 else:
-                    proj = PCA(n_components=min(2, *combined.shape)).fit_transform(combined)
-            except Exception:
-                continue
+                    proj = PCA(n_components=min(2,*combined.shape)).fit_transform(combined)
+            except Exception: continue
             entries = []; off = 0
-            for pts_o, c, a, lb in items:
-                n = len(pts_o)
-                entries.append((proj[off:off+n] if n else np.empty((0,2)), c, a, lb))
-                off += n
+            for pts_o,c,a,lb in items:
+                n=len(pts_o)
+                entries.append((proj[off:off+n] if n else np.empty((0,2)), c, a, lb)); off+=n
             ld[l] = entries
         plot_scatter_grid(ld, num_layers, out_tpl, title, use_tsne)
 
-
 def plot_heatmap(act, path, title):
-    fig, ax = plt.subplots(figsize=(max(6, act.shape[1]*0.6), max(8, act.shape[0]*0.3)))
-    im = ax.imshow(act, aspect="auto", cmap="YlOrRd", vmin=0, vmax=1, interpolation="nearest")
+    fig, ax = plt.subplots(figsize=(max(6,act.shape[1]*0.7), max(8,act.shape[0]*0.3)))
+    vmax = max(act.max(), 0.01)
+    im = ax.imshow(act, aspect="auto", cmap="YlOrRd", vmin=0, vmax=vmax, interpolation="nearest")
     ax.set_xlabel("KV Head (GQA)"); ax.set_ylabel("Layer"); ax.set_title(title)
     ax.set_yticks(range(act.shape[0])); ax.set_xticks(range(act.shape[1]))
     ax.tick_params(labelsize=7); plt.colorbar(im, ax=ax, shrink=0.8)
@@ -382,165 +348,190 @@ def plot_heatmap(act, path, title):
     print(f"    → {path}")
 
 # =====================================================================
-# Main analysis loop  (single-pass: prefill + decode extracted together)
+# Main analysis loop
 # =====================================================================
 def analyze_method(wrapper, method, items, args, plots_dir, model_tag):
     num_layers = wrapper.model.config.num_hidden_layers
-    num_kv_heads = getattr(wrapper.model.config, "num_key_value_heads",
-                           wrapper.model.config.num_attention_heads)
-    num_q_heads = wrapper.model.config.num_attention_heads
-    gqa_ratio = num_q_heads // num_kv_heads
+    num_kv = getattr(wrapper.model.config, "num_key_value_heads",
+                     wrapper.model.config.num_attention_heads)
+    n_q = wrapper.model.config.num_attention_heads
+    print(f"  GQA: {n_q} Q-heads → {num_kv} KV-heads (ratio {n_q//num_kv}:1)")
+    n_dec_steps = args.decode_analysis_steps
 
-    print(f"  GQA: {num_q_heads} query heads → {num_kv_heads} KV heads  (ratio {gqa_ratio}:1)")
+    # per-phase accumulators
+    P, D = "prefill", "decode"
+    csv_rows = {P:[], D:[]}
+    act_acc  = {ph: {v: np.zeros((num_layers, num_kv)) for v in VER_LABELS} for ph in [P,D]}
+    act_n    = {ph: {v:0 for v in VER_LABELS} for ph in [P,D]}
+    pca_vecs = {ph: defaultdict(list) for ph in [P,D]}
 
-    # ── per-phase accumulators ──
-    phases = ["prefill", "decode"]
-    csv_rows   = {ph: [] for ph in phases}
-    act_acc    = {ph: {v: np.zeros((num_layers, num_kv_heads)) for v in VER_LABELS} for ph in phases}
-    act_n      = {ph: {v: 0 for v in VER_LABELS} for ph in phases}
-    pca_vecs   = {ph: defaultdict(list) for ph in phases}
-
-    # ── single loop over tasks: extract prefill + decode at once ──
     for ti, item in enumerate(items):
         tid = item["task_id"]
-        qs = {"original": item["question"],
-              "version1": item.get("version1",""),
-              "version2": item.get("version2",""),
-              "version3": item.get("version3","")}
+        qs = {v: item.get(v if v != "original" else "question", "")
+              for v in VER_LABELS}
+        qs["original"] = item["question"]
         print(f"  task {tid}  ({ti+1}/{len(items)})")
 
-        # Extract BOTH prefill and decode keys in one pass per version
-        all_prefill = {}   # ver → keys (or {agent→keys} for text_mas)
-        all_decode  = {}   # ver → keys
+        all_pf, all_dk = {}, {}       # ver → keys
         for ver in VER_LABELS:
             q = qs[ver]
             if not q:
-                all_prefill[ver] = None
-                all_decode[ver]  = None
-                continue
+                all_pf[ver] = all_dk[ver] = None; continue
             if method == "baseline":
-                pk, dk = extract_baseline(wrapper, q, args, do_decode=True)
+                pk, dk, _ = extract_baseline(wrapper, q, args, num_layers)
+                all_pf[ver] = pk; all_dk[ver] = dk
             elif method == "text_mas":
-                pk, dk = extract_text_mas(wrapper, q, args, do_decode=True)
+                pka, dk = extract_text_mas(wrapper, q, args, num_layers)
+                all_pf[ver] = pka; all_dk[ver] = dk
             elif method == "latent_mas":
-                pk, dk = extract_latent_mas(wrapper, q, args, do_decode=True)
-            all_prefill[ver] = pk
-            all_decode[ver]  = dk
+                pk, dk = extract_latent_mas(wrapper, q, args, num_layers)
+                all_pf[ver] = pk; all_dk[ver] = dk
             gc.collect(); torch.cuda.empty_cache()
 
-        # ── helper: get final-agent keys for metric computation ──
-        def final_keys(ver, phase):
-            src = all_prefill if phase == "prefill" else all_decode
+        # ── helper: "final" keys for metrics ──
+        def fk(ver, phase):
+            src = all_pf if phase == P else all_dk
             k = src.get(ver)
-            if k is None:
-                return None
-            if method == "text_mas" and phase == "prefill" and isinstance(k, dict):
+            if k is None: return None
+            if method == "text_mas" and phase == P and isinstance(k, dict):
                 return k.get("judger")
             return k
 
-        # ── compute metrics for BOTH phases from single extraction ──
-        for ph in phases:
-            prefix = f"{method}_{args.task}_{model_tag}_{ph}"
-            orig = final_keys("original", ph)
-            if orig is None:
-                continue
-
-            # pre-compute pair metrics
+        # ====== PREFILL metrics (aggregated per-layer) ======
+        orig_p = fk("original", P)
+        if orig_p:
             pm = {}
-            for a, b in [("original","version1"),("original","version2"),
-                         ("original","version3"),("version1","version2"),
-                         ("version1","version3"),("version2","version3")]:
-                ka, kb = final_keys(a, ph), final_keys(b, ph)
-                if ka and kb:
-                    pm[(a,b)] = layer_metrics(ka, kb, num_layers)
-
-            # CSV rows
+            for a,b in [("original","version1"),("original","version2"),("original","version3"),
+                        ("version1","version2"),("version1","version3"),("version2","version3")]:
+                ka,kb = fk(a,P), fk(b,P)
+                if ka and kb: pm[(a,b)] = layer_metrics_agg(ka, kb, num_layers)
             for l in range(num_layers):
-                row = {"task_id": tid, "layer": l}
+                row = {"task_id":tid, "layer":l}
                 for v in ["version1","version2","version3"]:
-                    m = pm.get(("original", v))
-                    row[f"{v}_cos"] = round(m[l][0], 3) if m else float("nan")
-                    row[f"{v}_js"]  = round(m[l][1], 3) if m else float("nan")
-                for lbl, va, vb in [("ver1to2","version1","version2"),
-                                    ("ver1to3","version1","version3"),
-                                    ("ver2to3","version2","version3")]:
-                    m = pm.get((va, vb))
-                    row[f"{lbl}_cos"] = round(m[l][0], 3) if m else float("nan")
-                    row[f"{lbl}_js"]  = round(m[l][1], 3) if m else float("nan")
-                csv_rows[ph].append(row)
+                    m=pm.get(("original",v))
+                    row[f"{v}_cos"]=round(m[l][0],3) if m else float("nan")
+                    row[f"{v}_js"] =round(m[l][1],3) if m else float("nan")
+                for lbl,va,vb in [("ver1to2","version1","version2"),
+                                  ("ver1to3","version1","version3"),
+                                  ("ver2to3","version2","version3")]:
+                    m=pm.get((va,vb))
+                    row[f"{lbl}_cos"]=round(m[l][0],3) if m else float("nan")
+                    row[f"{lbl}_js"] =round(m[l][1],3) if m else float("nan")
+                csv_rows[P].append(row)
 
-            # activation (running mean)
+        # ====== DECODE metrics (per-step × per-layer) ======
+        orig_d = fk("original", D)
+        if orig_d:
+            actual_steps = min(n_dec_steps,
+                               min(orig_d[l].shape[1] for l in orig_d if orig_d[l].size > 0)
+                               if orig_d else 0)
+            for step in range(actual_steps):
+                for l in range(num_layers):
+                    row = {"task_id":tid, "decode_step":step, "layer":l}
+                    for v in ["version1","version2","version3"]:
+                        kv = fk(v, D)
+                        if kv:
+                            c,j = layer_metrics_step(orig_d, kv, l, step)
+                        else:
+                            c,j = float("nan"), float("nan")
+                        row[f"{v}_cos"]=round(c,3); row[f"{v}_js"]=round(j,3)
+                    for lbl,va,vb in [("ver1to2","version1","version2"),
+                                      ("ver1to3","version1","version3"),
+                                      ("ver2to3","version2","version3")]:
+                        ka2, kb2 = fk(va,D), fk(vb,D)
+                        if ka2 and kb2:
+                            c,j = layer_metrics_step(ka2,kb2,l,step)
+                        else:
+                            c,j = float("nan"),float("nan")
+                        row[f"{lbl}_cos"]=round(c,3); row[f"{lbl}_js"]=round(j,3)
+                    csv_rows[D].append(row)
+
+        # ====== Activation + PCA/t-SNE for BOTH phases ======
+        for ph in [P, D]:
             for ver in VER_LABELS:
-                fk = final_keys(ver, ph)
-                if fk:
-                    a = activation_scores(fk, num_layers, num_kv_heads)
-                    n = act_n[ph][ver]
-                    act_acc[ph][ver] = (act_acc[ph][ver] * n + a) / (n + 1)
-                    act_n[ph][ver] += 1
+                k = fk(ver, ph)
+                if k is None: continue
+                # activation running mean
+                a = activation_scores(k, num_layers, num_kv)
+                n = act_n[ph][ver]
+                act_acc[ph][ver] = (act_acc[ph][ver]*n + a)/(n+1)
+                act_n[ph][ver] += 1
 
-            # PCA/t-SNE subsampled vectors
-            if method == "text_mas" and ph == "prefill":
+            # PCA/t-SNE collection
+            if method == "text_mas" and ph == P:
                 for ver in VER_LABELS:
-                    k_agents = all_prefill.get(ver)
+                    k_agents = all_pf.get(ver)
                     if not isinstance(k_agents, dict): continue
                     for ag_role, ag_keys in k_agents.items():
                         alpha = AGENT_ALPHA.get(ag_role, 0.5)
                         col = VER_COLORS[ver]
                         for l in range(num_layers):
-                            k = ag_keys.get(l)
-                            if k is None or k.size == 0: continue
-                            seq = k.shape[1]
-                            # GQA: k shape = [kv_heads, seq, head_dim]
-                            flat = k.transpose(1,0,2).reshape(seq, -1)
-                            if flat.shape[0] > MAX_PCA_TOKENS:
-                                idx = np.random.choice(flat.shape[0], MAX_PCA_TOKENS, replace=False)
-                                flat = flat[idx]
+                            k=ag_keys.get(l)
+                            if k is None or k.size==0: continue
+                            seq=k.shape[1]
+                            flat=k.transpose(1,0,2).reshape(seq,-1)
+                            if flat.shape[0]>MAX_PCA_TOKENS:
+                                flat=flat[np.random.choice(flat.shape[0],MAX_PCA_TOKENS,replace=False)]
                             pca_vecs[ph][l].append((flat, col, alpha, f"{ver}_{ag_role}"))
             else:
                 for ver in VER_LABELS:
-                    fk = final_keys(ver, ph)
-                    if fk is None: continue
-                    col = VER_COLORS[ver]
+                    k=fk(ver, ph)
+                    if k is None: continue
+                    col=VER_COLORS[ver]
                     for l in range(num_layers):
-                        k = fk.get(l)
-                        if k is None or k.size == 0: continue
-                        seq = k.shape[1]
-                        flat = k.transpose(1,0,2).reshape(seq, -1)
-                        if flat.shape[0] > MAX_PCA_TOKENS:
-                            idx = np.random.choice(flat.shape[0], MAX_PCA_TOKENS, replace=False)
-                            flat = flat[idx]
+                        kl=k.get(l)
+                        if kl is None or kl.size==0: continue
+                        seq=kl.shape[1]
+                        flat=kl.transpose(1,0,2).reshape(seq,-1)
+                        if flat.shape[0]>MAX_PCA_TOKENS:
+                            flat=flat[np.random.choice(flat.shape[0],MAX_PCA_TOKENS,replace=False)]
                         pca_vecs[ph][l].append((flat, col, 0.6, ver))
 
-        # free all keys for this task
-        del all_prefill, all_decode
-        gc.collect(); torch.cuda.empty_cache()
+        del all_pf, all_dk; gc.collect(); torch.cuda.empty_cache()
 
-    # ── write outputs for both phases ──
-    for ph in phases:
+    # ── outputs per phase ──
+    for ph in [P, D]:
         prefix = f"{method}_{args.task}_{model_tag}_{ph}"
 
         # CSV
         rows = csv_rows[ph]
         if rows:
-            csv_path = os.path.join(plots_dir, f"{prefix}_record.csv")
-            with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            path = os.path.join(plots_dir, f"{prefix}_record.csv")
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                w=csv.DictWriter(f, fieldnames=list(rows[0].keys()))
                 w.writeheader(); w.writerows(rows)
-            print(f"  CSV → {csv_path}")
+            print(f"  CSV → {path}  ({len(rows)} rows)")
 
         # PCA / t-SNE
         tpl = os.path.join(plots_dir, f"{prefix}_{{tag}}_{{layers}}.png")
         dim_reduce_plots(pca_vecs[ph], num_layers, tpl, f"{method} {ph}")
 
-        # activation heatmaps
+        # Activation heatmap — per-layer normalization
         for ver in VER_LABELS:
-            a = act_acc[ph][ver]
-            mx = a.max()
-            scaled = a / (mx + 1e-12) if mx > 0 else a
+            a = act_acc[ph][ver].copy()
+            # Normalize each layer independently for visibility
+            for l in range(num_layers):
+                row_max = a[l].max()
+                if row_max > 1e-12:
+                    a[l] /= row_max
             p = os.path.join(plots_dir, f"{prefix}_activation_{ver}.png")
-            plot_heatmap(scaled, p, f"{method} {ph} — {ver}")
+            plot_heatmap(a, p, f"{method} {ph} — {ver}  (per-layer norm)")
 
     del csv_rows, pca_vecs, act_acc; gc.collect()
+
+    # ── diagnostic: mean cosine across versions for PCA overlap check ──
+    print(f"\n  Diagnostic — mean cosine similarity (prefill, orig↔ver1/2/3):")
+    # re-read CSV to compute
+    csv_p = os.path.join(plots_dir, f"{method}_{args.task}_{model_tag}_prefill_record.csv")
+    if os.path.exists(csv_p):
+        import pandas as pd
+        df = pd.read_csv(csv_p)
+        for v in ["version1","version2","version3"]:
+            col = f"{v}_cos"
+            if col in df.columns:
+                print(f"    {v}: {df[col].mean():.4f}  (min={df[col].min():.4f}  max={df[col].max():.4f})")
+        print("  → High cosine (>0.95 everywhere) = genuine overlap, not a bug.")
+        print("  → If decay in deeper layers, the model differentiates paraphrases there.\n")
 
 
 # =====================================================================
@@ -554,16 +545,19 @@ def main():
                              "arc_challenge","mbppplus","humanevalplus","medqa"])
     pa.add_argument("--model_name", default="Qwen/Qwen3-8B")
     pa.add_argument("--device", default="cuda")
-    pa.add_argument("--methods", nargs="+",
-                    default=["baseline","text_mas","latent_mas"],
+    pa.add_argument("--methods", nargs="+", default=["baseline","text_mas","latent_mas"],
                     choices=["baseline","text_mas","latent_mas"])
     pa.add_argument("--prompt", choices=["sequential","hierarchical"], default="sequential")
     pa.add_argument("--max_tasks", type=int, default=3)
     pa.add_argument("--latent_steps", type=int, default=10)
     pa.add_argument("--temperature", type=float, default=0.6)
     pa.add_argument("--top_p", type=float, default=0.95)
-    pa.add_argument("--max_new_tokens", type=int, default=4096)
-    pa.add_argument("--gen_max_tokens", type=int, default=1024)
+    pa.add_argument("--max_new_tokens", type=int, default=4096,
+                    help="Full generation length (for correct inference)")
+    pa.add_argument("--gen_max_tokens", type=int, default=1024,
+                    help="Max tokens for text_mas intermediate agents")
+    pa.add_argument("--decode_analysis_steps", type=int, default=100,
+                    help="How many decoded tokens to record in CSV/plots")
     pa.add_argument("--text_mas_context_length", type=int, default=-1)
     pa.add_argument("--think", action="store_true")
     pa.add_argument("--latent_space_realign", action="store_true")
@@ -571,45 +565,31 @@ def main():
     pa.add_argument("--seed", type=int, default=42)
     args = pa.parse_args()
 
-    # ── attrs needed by ModelWrapper but irrelevant for HF-only path ──
     args.use_vllm = False
     args.use_second_HF_model = False
     args.enable_prefix_caching = False
     args.device2 = "cpu"
     args.tensor_parallel_size = 1
     args.gpu_memory_utilization = 0.9
-    args.method = "baseline"  # placeholder, overridden per method
+    args.method = "baseline"
 
     np.random.seed(args.seed); torch.manual_seed(args.seed)
     os.makedirs(args.plots_dir, exist_ok=True)
 
-    # ── load data ──
     items = []
     with open(args.data_path, encoding="utf-8") as f:
         for line in f:
-            if line.strip():
-                items.append(json.loads(line))
-    if args.max_tasks > 0:
-        items = items[:args.max_tasks]
+            if line.strip(): items.append(json.loads(line))
+    if args.max_tasks > 0: items = items[:args.max_tasks]
     print(f"Loaded {len(items)} tasks from {args.data_path}")
-    for it in items:
-        for v in ["version1","version2","version3"]:
-            if not it.get(v):
-                print(f"  ⚠ task {it['task_id']} — empty {v}")
 
-    # ── load model (original ModelWrapper, HF path) ──
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     wrapper = ModelWrapper(args.model_name, device, use_vllm=False, args=args)
     model_tag = args.model_name.split("/")[-1]
-    nl = wrapper.model.config.num_hidden_layers
-    nh = getattr(wrapper.model.config, "num_key_value_heads",
-                 wrapper.model.config.num_attention_heads)
-    print(f"Model ready: {model_tag}  layers={nl}  kv_heads={nh}")
 
-    # ── run each method ──
     for method in args.methods:
         print(f"\n{'='*60}\n  Method: {method}\n{'='*60}")
-        args.method = method   # prompts.py asserts this
+        args.method = method
         analyze_method(wrapper, method, items, args, args.plots_dir, model_tag)
 
     print(f"\nAll done. Outputs in {args.plots_dir}/")
