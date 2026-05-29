@@ -368,14 +368,51 @@ def dim_reduce_plots(vecs, num_layers, out_tpl, title):
             ld[l] = entries
         plot_scatter_grid(ld, num_layers, out_tpl, title, use_tsne)
 
-def plot_heatmap(act, path, title):
-    fig, ax = plt.subplots(figsize=(max(6,act.shape[1]*0.7), max(8,act.shape[0]*0.3)))
-    vmax = max(act.max(), 0.01)
-    im = ax.imshow(act, aspect="auto", cmap="YlOrRd", vmin=0, vmax=vmax, interpolation="nearest")
-    ax.set_xlabel("KV Head (GQA)"); ax.set_ylabel("Layer"); ax.set_title(title)
-    ax.set_yticks(range(act.shape[0])); ax.set_xticks(range(act.shape[1]))
-    ax.tick_params(labelsize=7); plt.colorbar(im, ax=ax, shrink=0.8)
-    plt.tight_layout(); fig.savefig(path, dpi=150, bbox_inches="tight"); plt.close(fig)
+def plot_activation_diff_grid(act_dict, path, title_prefix, num_layers, num_kv):
+    """2×3 grid of layer×head activation-difference heatmaps.
+    Row 1: orig↔ver1, orig↔ver2, orig↔ver3
+    Row 2: ver1↔ver2, ver1↔ver3, ver2↔ver3
+    """
+    pairs = [
+        ("original","version1"), ("original","version2"), ("original","version3"),
+        ("version1","version2"), ("version1","version3"), ("version2","version3"),
+    ]
+    labels = [
+        "orig ↔ ver1", "orig ↔ ver2", "orig ↔ ver3",
+        "ver1 ↔ ver2", "ver1 ↔ ver3", "ver2 ↔ ver3",
+    ]
+
+    fig, axes = plt.subplots(2, 3, figsize=(max(14, num_kv*2.2), max(12, num_layers*0.35)))
+    fig.suptitle(title_prefix, fontsize=14, y=1.01)
+
+    # compute all diffs first to find global max for shared color scale
+    diffs = []
+    for va, vb in pairs:
+        a = act_dict.get(va, np.zeros((num_layers, num_kv)))
+        b = act_dict.get(vb, np.zeros((num_layers, num_kv)))
+        diff = np.abs(a - b)
+        # per-layer normalize for visibility
+        for l in range(num_layers):
+            rmax = diff[l].max()
+            if rmax > 1e-12:
+                diff[l] /= rmax
+        diffs.append(diff)
+
+    for idx, (diff, label) in enumerate(zip(diffs, labels)):
+        ax = axes[idx // 3][idx % 3]
+        im = ax.imshow(diff, aspect="auto", cmap="inferno", vmin=0, vmax=1,
+                       interpolation="nearest")
+        ax.set_title(label, fontsize=11, fontweight="bold")
+        ax.set_xlabel("KV Head (GQA)", fontsize=8)
+        ax.set_ylabel("Layer", fontsize=8)
+        ax.set_yticks(range(0, num_layers, max(1, num_layers//12)))
+        ax.set_xticks(range(num_kv))
+        ax.tick_params(labelsize=6)
+
+    fig.colorbar(im, ax=axes, shrink=0.6, label="|Δ activation| (per-layer norm)")
+    plt.tight_layout()
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
     print(f"    → {path}")
 
 # =====================================================================
@@ -587,16 +624,11 @@ def analyze_method(wrapper, method, items, args, plots_dir, model_tag):
         tpl = os.path.join(plots_dir, f"{prefix}_{{tag}}_{{layers}}.png")
         dim_reduce_plots(pca_vecs[ph], num_layers, tpl, f"{method} {ph}")
 
-        # Activation heatmap — per-layer normalization
-        for ver in VER_LABELS:
-            a = act_acc[ph][ver].copy()
-            # Normalize each layer independently for visibility
-            for l in range(num_layers):
-                row_max = a[l].max()
-                if row_max > 1e-12:
-                    a[l] /= row_max
-            p = os.path.join(plots_dir, f"{prefix}_activation_{ver}.png")
-            plot_heatmap(a, p, f"{method} {ph} — {ver}  (per-layer norm)")
+        # Activation difference heatmap (2×3 grid: all pairwise diffs)
+        p = os.path.join(plots_dir, f"{prefix}_activation_diff.png")
+        plot_activation_diff_grid(act_acc[ph], p,
+                                   f"{method} {ph} — pairwise |Δ activation|",
+                                   num_layers, num_kv)
 
     del csv_rows, pca_vecs, act_acc; gc.collect()
 
