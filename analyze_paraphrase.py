@@ -31,12 +31,33 @@ def analyse_file(csv_path: str, output_dir: str = "./paraphrase_data"):
     out_name = os.path.splitext(out_name)[0] + ".txt"
     out_path = os.path.join(output_dir, out_name)
 
-    # ── Read CSV (tab-separated based on the example) ──
-    df = pd.read_csv(csv_path, sep="\t")
+    # ── Auto-detect separator and read CSV ──
+    with open(csv_path, "r", encoding="utf-8") as f:
+        first_line = f.readline()
+    if "\t" in first_line:
+        sep = "\t"
+    elif "," in first_line:
+        sep = ","
+    else:
+        sep = None  # let pandas sniff
+
+    df = pd.read_csv(csv_path, sep=sep, engine="python" if sep is None else "c")
+
+    # Strip whitespace from column names
+    df.columns = df.columns.str.strip()
+
+    # Debug: print detected columns
+    print(f"  separator: {repr(sep)}")
+    print(f"  shape: {df.shape}")
+    print(f"  columns: {list(df.columns)}")
 
     # Identify available columns
     cos_cols = {p: f"{p}_cos" for p in VERSION_PREFIXES if f"{p}_cos" in df.columns}
     js_cols  = {p: f"{p}_js"  for p in VERSION_PREFIXES if f"{p}_js"  in df.columns}
+
+    if not cos_cols and not js_cols:
+        print(f"  [WARNING] No matching version columns found! Skipping.")
+        return
 
     has_decode_step = "decode_step" in df.columns and not is_prefill
 
