@@ -1,30 +1,51 @@
 #!/usr/bin/env python3
 """
-analyze_representations.py  (v3)
-================================
-Uses original project code (models.py, prompts.py) directly.
-No modifications to original files needed.
+analyze_representations.py  (v4 — head-wise prefill sensitivity)
+================================================================
+Purpose
+-------
+Measure, in the *prefill* stage of a baseline single-agent forward pass, how the
+internal representations of a Qwen model change across paraphrased question
+variants (original / version1 / version2 / version3).
 
-Fixes in v3:
- - GQA-aware: key cache is [kv_heads, seq, head_dim], heatmap labels explicit
- - Single-pass: prefill+decode extracted together (no double-prefill)
- - Decode CSV: per-step × per-layer rows (decode_step column)
- - Full generation via generate_text_batch, keys extracted from returned past
- - Activation heatmap: per-layer normalization for visibility
- - text_mas agent alpha: wider spread (1.0 / 0.55 / 0.25 / 0.08)
+Unlike the previous K-cache-centric pairwise-mean analysis, this version keeps
+the **head dimension** and reports, per layer and per head:
+
+  * Q / K / V                  — attention *input* subspace (after RoPE for Q/K)
+  * head_output                — attention *result*  (attn_probs @ V, before o_proj)
+  * residual stream hidden     — transformer *block output* representation
+
+Metrics per head / layer:
+  * mean_pairwise_cosine
+  * maxmatch_cosine
+  * linear CKA   (token-count matched only; NaN otherwise)
+  * RBF MMD^2    (median-heuristic bandwidth; distance-like, smaller == closer)
+  * head_output also reports l2_mean
+
+Removed vs older versions:
+  * JS divergence  (Q/K/V/hidden are not probability distributions)
+  * t-SNE          (visualization-only, unstable for quantitative claims)
+  * head-flattened cosine as a core metric  (replaced by head-wise metrics)
+
+TextMAS / LatentMAS dispatch and CLI are kept for compatibility, but the new
+head-wise analysis and the final CSV/heatmap deliverables are produced for the
+*baseline* method only (--primary_analysis_method baseline).
 """
-import argparse, csv, gc, json, math, os, re, sys
+import argparse
+import csv
+import gc
+import json
+import math
+import os
+import sys
 from collections import namedtuple, defaultdict
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
-import matplotlib; matplotlib.use("Agg")
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
-from scipy.spatial.distance import jensenshannon
 
 # ── project imports ──────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -37,614 +58,857 @@ from prompts import (
     build_agent_message_hierarchical_latent_mas,
 )
 
-# ── agents ───────────────────────────────────────────────────────────
+# ── agents (kept for text_mas / latent_mas dispatch) ─────────────────
 Agent = namedtuple("Agent", ["name", "role"])
-AGENTS = [Agent("Planner","planner"), Agent("Critic","critic"),
-          Agent("Refiner","refiner"), Agent("Judger","judger")]
-HIER_NAME = {"Planner":"Math Agent","Critic":"Science Agent",
-             "Refiner":"Code Agent","Judger":"Task Summrizer"}
+AGENTS = [Agent("Planner", "planner"), Agent("Critic", "critic"),
+          Agent("Refiner", "refiner"), Agent("Judger", "judger")]
+HIER_NAME = {"Planner": "Math Agent", "Critic": "Science Agent",
+             "Refiner": "Code Agent", "Judger": "Task Summrizer"}
 
-# ── visual constants ─────────────────────────────────────────────────
-AGENT_ALPHA = {"planner":1.0, "critic":0.55, "refiner":0.25, "judger":0.08}
-VER_LABELS  = ["original","version1","version2","version3"]
-VER_COLORS  = {"original":(1,0,0),"version1":(0.6,0,0.8),
-               "version2":(0,0.7,0),"version3":(0,0.3,1)}
-MAX_PCA_TOKENS = 200
+VER_LABELS = ["original", "version1", "version2", "version3"]
+PAIRS = [
+    ("original", "version1"), ("original", "version2"), ("original", "version3"),
+    ("version1", "version2"), ("version1", "version3"), ("version2", "version3"),
+]
+
 
 # =====================================================================
-# Helpers
+# Metric primitives  (all operate on [n_tokens, dim] head/layer matrices)
 # =====================================================================
-def strip_thinking(text):
-    text = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL)
-    text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL)
-    return text.strip()
+def rowwise_l2_normalize(x: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float64)
+    n = np.linalg.norm(x, axis=1, keepdims=True)
+    return x / (n + eps)
 
-def extract_keys_from_past(past, num_layers=None):
-    """Full key extraction: dict[layer] → np [kv_heads, seq, head_dim]."""
-    keys = {}
-    if hasattr(past, "key_cache"):
-        n = len(past.key_cache) if num_layers is None else num_layers
-        for i in range(n):
-            keys[i] = past.key_cache[i][0].detach().cpu().float().numpy()
-    else:
-        n = len(past) if num_layers is None else num_layers
-        for i in range(n):
-            kl = past[i][0] if isinstance(past[i], (tuple, list)) else past[i]
-            keys[i] = kl[0].detach().cpu().float().numpy()
-    return keys
 
-def extract_keys_slice(past, start, end, num_layers):
-    """Extract keys for positions [start:end] only — memory efficient."""
-    keys = {}
-    if hasattr(past, "key_cache"):
-        for l in range(min(num_layers, len(past.key_cache))):
-            keys[l] = past.key_cache[l][0, :, start:end, :].detach().cpu().float().numpy()
-    else:
-        for l in range(min(num_layers, len(past))):
-            kl = past[l][0] if isinstance(past[l], (tuple, list)) else past[l]
-            keys[l] = kl[0, :, start:end, :].detach().cpu().float().numpy()
-    return keys
+def mean_pairwise_cosine(X: np.ndarray, Y: np.ndarray) -> float:
+    """Mean over the full [n_a, n_b] cosine matrix of L2-normalized rows."""
+    if X.size == 0 or Y.size == 0:
+        return float("nan")
+    Xn, Yn = rowwise_l2_normalize(X), rowwise_l2_normalize(Y)
+    return float((Xn @ Yn.T).mean())
 
-def softmax_dist(v):
-    v = v - v.max(); e = np.exp(v)
-    return e / (e.sum() + 1e-12)
 
-def cosine_sim(a, b):
-    af, bf = a.flatten().astype(np.float64), b.flatten().astype(np.float64)
-    d = np.linalg.norm(af) * np.linalg.norm(bf)
-    return float(np.dot(af, bf) / d) if d > 1e-12 else 0.0
+def maxmatch_cosine(X: np.ndarray, Y: np.ndarray) -> float:
+    """Average of (row-wise max over Y) and (column-wise max over X).
 
-def js_divergence(a, b):
-    p, q = softmax_dist(a.flatten().astype(np.float64)), softmax_dist(b.flatten().astype(np.float64))
-    return float(jensenshannon(p, q, base=2) ** 2)
+    More robust than mean pairwise cosine when token alignment differs
+    (e.g. a Chinese paraphrase with a different tokenization)."""
+    if X.size == 0 or Y.size == 0:
+        return float("nan")
+    Xn, Yn = rowwise_l2_normalize(X), rowwise_l2_normalize(Y)
+    C = Xn @ Yn.T                      # [n_a, n_b]
+    a2b = C.max(axis=1).mean()         # each original token -> best version token
+    b2a = C.max(axis=0).mean()         # each version token  -> best original token
+    return float(0.5 * (a2b + b2a))
 
-# ── common-prefix detection (strips system prompt, <think>, etc.) ──
-def common_prefix_len(tokenizer, prompt_a, prompt_b):
-    """Number of leading tokens shared by two prompts (system msg, formatting, etc.)."""
+
+def l2_mean(X: np.ndarray, Y: np.ndarray) -> float:
+    """Mean of the full [n_a, n_b] Euclidean-distance matrix."""
+    if X.size == 0 or Y.size == 0:
+        return float("nan")
+    X = np.asarray(X, dtype=np.float64)
+    Y = np.asarray(Y, dtype=np.float64)
+    # ||x - y||^2 = ||x||^2 + ||y||^2 - 2 x.y
+    xx = (X * X).sum(axis=1)[:, None]
+    yy = (Y * Y).sum(axis=1)[None, :]
+    d2 = np.clip(xx + yy - 2.0 * (X @ Y.T), 0.0, None)
+    return float(np.sqrt(d2).mean())
+
+
+def _center_gram(K: np.ndarray) -> np.ndarray:
+    n = K.shape[0]
+    H = np.eye(n) - np.ones((n, n)) / n
+    return H @ K @ H
+
+
+def linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
+    """Linear CKA between two equal-sample representations [n, dx], [n, dy].
+
+    Caller MUST guarantee X.shape[0] == Y.shape[0]; CKA is undefined for
+    mismatched sample counts (token alignment problem)."""
+    X = np.asarray(X, dtype=np.float64)
+    Y = np.asarray(Y, dtype=np.float64)
+    if X.shape[0] != Y.shape[0] or X.shape[0] < 2:
+        return float("nan")
+    Kx = _center_gram(X @ X.T)
+    Ky = _center_gram(Y @ Y.T)
+    hsic_xy = float((Kx * Ky).sum())
+    hsic_xx = float((Kx * Kx).sum())
+    hsic_yy = float((Ky * Ky).sum())
+    denom = math.sqrt(hsic_xx * hsic_yy)
+    if denom < 1e-12:
+        return float("nan")
+    return hsic_xy / denom
+
+
+def _uniform_resample(X: np.ndarray, n_out: int, rng: np.random.Generator) -> np.ndarray:
+    n = X.shape[0]
+    if n == n_out:
+        return X
+    if n > n_out:
+        idx = np.linspace(0, n - 1, n_out).round().astype(int)
+        return X[idx]
+    # n < n_out should not happen for resampling-down; pad by resampling with replacement
+    idx = rng.integers(0, n, size=n_out)
+    return X[idx]
+
+
+def rbf_mmd2(X: np.ndarray, Y: np.ndarray, max_tokens: int = 256,
+             rng: Optional[np.random.Generator] = None) -> float:
+    """Biased RBF-kernel MMD^2 with median-heuristic bandwidth.
+
+    Works for n_a != n_b. Long sequences are uniformly subsampled to
+    `max_tokens` per side. Smaller value == more similar distributions."""
+    if X.size == 0 or Y.size == 0:
+        return float("nan")
+    if rng is None:
+        rng = np.random.default_rng(0)
+    X = np.asarray(X, dtype=np.float64)
+    Y = np.asarray(Y, dtype=np.float64)
+    if X.shape[0] > max_tokens:
+        X = X[np.sort(rng.choice(X.shape[0], max_tokens, replace=False))]
+    if Y.shape[0] > max_tokens:
+        Y = Y[np.sort(rng.choice(Y.shape[0], max_tokens, replace=False))]
+
+    def sq_dists(A, B):
+        aa = (A * A).sum(axis=1)[:, None]
+        bb = (B * B).sum(axis=1)[None, :]
+        return np.clip(aa + bb - 2.0 * (A @ B.T), 0.0, None)
+
+    d_xx = sq_dists(X, X)
+    d_yy = sq_dists(Y, Y)
+    d_xy = sq_dists(X, Y)
+
+    # median heuristic over pooled pairwise distances
+    pooled = np.concatenate([d_xx[np.triu_indices_from(d_xx, k=1)],
+                             d_yy[np.triu_indices_from(d_yy, k=1)],
+                             d_xy.ravel()])
+    med = np.median(pooled[pooled > 0]) if np.any(pooled > 0) else 1.0
+    if med < 1e-12:
+        med = 1.0
+    gamma = 1.0 / med            # = 1 / (2 * sigma^2) with sigma^2 = med/2
+
+    k_xx = np.exp(-gamma * d_xx)
+    k_yy = np.exp(-gamma * d_yy)
+    k_xy = np.exp(-gamma * d_xy)
+    mmd2 = k_xx.mean() + k_yy.mean() - 2.0 * k_xy.mean()
+    return float(max(mmd2, 0.0))
+
+
+def cka_for_pair(X: np.ndarray, Y: np.ndarray, align: bool,
+                 rng: np.random.Generator) -> Tuple[float, str]:
+    """Returns (cka_linear, cka_status)."""
+    na, nb = X.shape[0], Y.shape[0]
+    if na == nb:
+        if na < 2:
+            return float("nan"), "skipped_too_few_tokens"
+        return linear_cka(X, Y), "matched"
+    if not align:
+        return float("nan"), "skipped_length_mismatch"
+    m = min(na, nb)
+    if m < 2:
+        return float("nan"), "skipped_too_few_tokens"
+    Xa = _uniform_resample(X, m, rng)
+    Ya = _uniform_resample(Y, m, rng)
+    return linear_cka(Xa, Ya), "aligned_resampled"
+
+
+# =====================================================================
+# RoPE re-application (to recover post-RoPE Q/K from pre-RoPE captures)
+# =====================================================================
+def _rotate_half(x: torch.Tensor) -> torch.Tensor:
+    half = x.shape[-1] // 2
+    x1 = x[..., :half]
+    x2 = x[..., half:]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def _apply_rope(t: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """t: [B, heads, seq, head_dim];  cos/sin: [B, seq, head_dim]."""
+    cos = cos.unsqueeze(1)             # [B, 1, seq, hd]
+    sin = sin.unsqueeze(1)
+    return t * cos + _rotate_half(t) * sin
+
+
+# =====================================================================
+# Common-prefix detection (strips shared system prompt / template head)
+# =====================================================================
+def common_prefix_len(tokenizer, prompt_a: str, prompt_b: str) -> int:
     ids_a = tokenizer(prompt_a, add_special_tokens=False)["input_ids"]
     ids_b = tokenizer(prompt_b, add_special_tokens=False)["input_ids"]
-    for i in range(min(len(ids_a), len(ids_b))):
+    n = min(len(ids_a), len(ids_b))
+    for i in range(n):
         if ids_a[i] != ids_b[i]:
             return i
-    return min(len(ids_a), len(ids_b))
+    return n
 
-# ── per-layer prefill metrics (pairwise cosine on question-portion keys) ──
-def layer_metrics_prefill(ka, kb, num_layers, skip_a=0, skip_b=0):
-    """Mean pairwise cosine & JS between question-specific token keys.
-    ka/kb: dict[layer] → np [kv_heads, seq, head_dim].
-    skip_a/skip_b: shared-prefix tokens to exclude from metrics.
+
+# =====================================================================
+# Locate Qwen-style submodules for hooking
+# =====================================================================
+def _locate_modules(model):
+    """Return (decoder_layers, rotary_emb_module) for a Qwen-style model.
+
+    Raises RuntimeError naming the missing path on failure."""
+    base = getattr(model, "model", None)
+    if base is None:
+        raise RuntimeError(
+            "Could not find `model.model` (decoder backbone). "
+            "Hooking only supports Qwen-style `AutoModelForCausalLM` layouts.")
+    layers = getattr(base, "layers", None)
+    if layers is None:
+        raise RuntimeError("Could not find `model.model.layers` (decoder layer list).")
+    rotary = getattr(base, "rotary_emb", None)
+    if rotary is None:
+        raise RuntimeError(
+            "Could not find `model.model.rotary_emb`. Post-RoPE Q/K recovery "
+            "requires the shared rotary embedding module.")
+    # sanity-check the first attention block
+    sa = getattr(layers[0], "self_attn", None)
+    if sa is None:
+        raise RuntimeError("Could not find `model.model.layers[0].self_attn`.")
+    for name in ("q_proj", "k_proj", "v_proj", "o_proj"):
+        if getattr(sa, name, None) is None:
+            raise RuntimeError(
+                f"Could not find `self_attn.{name}` in attention module "
+                f"of type {type(sa).__name__}. Unsupported architecture for head-wise hooks.")
+    return layers, rotary
+
+
+# =====================================================================
+# Baseline prefill activation collection (single forward pass + hooks)
+# =====================================================================
+@torch.no_grad()
+def collect_baseline_prefill_activations(wrapper, question: str, args) -> Dict:
+    """Run ONE prefill forward pass on the rendered baseline prompt and collect
+    head-wise Q/K/V, pre-o_proj head_output, and residual-stream hidden states.
+
+    Returns dict described in the task spec.
     """
-    res = []
-    for l in range(num_layers):
-        a, b = ka.get(l), kb.get(l)
-        if a is None or b is None or a.size == 0 or b.size == 0:
-            res.append((0., 1.)); continue
-        # strip shared prefix → question-specific portion
-        aq = a[:, skip_a:, :]   # [heads, n_a, dim]
-        bq = b[:, skip_b:, :]   # [heads, n_b, dim]
-        na, nb = aq.shape[1], bq.shape[1]
-        if na == 0 or nb == 0:
-            res.append((0., 1.)); continue
-        # flatten heads → [n, heads*dim]
-        af = aq.transpose(1, 0, 2).reshape(na, -1).astype(np.float64)
-        bf = bq.transpose(1, 0, 2).reshape(nb, -1).astype(np.float64)
-        # L2-normalise rows
-        af /= (np.linalg.norm(af, axis=1, keepdims=True) + 1e-12)
-        bf /= (np.linalg.norm(bf, axis=1, keepdims=True) + 1e-12)
-        # mean pairwise cosine  (not cosine of means)
-        cos_mat = af @ bf.T                       # [na, nb]
-        cos_mean = float(cos_mat.mean())
-        # JS on mean vectors of the question portion
-        a_mean = aq.mean(axis=1).flatten()
-        b_mean = bq.mean(axis=1).flatten()
-        js = js_divergence(a_mean, b_mean)
-        res.append((cos_mean, js))
-    return res
-
-# ── per-step metrics (for decode) ──
-def layer_metrics_step(ka, kb, layer, step):
-    """Single (cos, js) for one layer, one decode step."""
-    a, b = ka.get(layer), kb.get(layer)
-    if a is None or b is None:
-        return (0., 1.)
-    if a.shape[1] <= step or b.shape[1] <= step:
-        return (0., 1.)
-    av = a[:, step, :].flatten()
-    bv = b[:, step, :].flatten()
-    return (cosine_sim(av, bv), js_divergence(av, bv))
-
-def activation_scores(keys, num_layers, num_kv_heads):
-    """[num_layers, num_kv_heads] mean L2 norm of key vectors."""
-    act = np.zeros((num_layers, num_kv_heads), dtype=np.float64)
-    for l in range(num_layers):
-        k = keys.get(l)
-        if k is None or k.size == 0: continue
-        norms = np.linalg.norm(k, axis=2)          # [heads, seq]
-        act[l, :min(num_kv_heads, norms.shape[0])] = norms.mean(axis=1)[:num_kv_heads]
-    return act
-
-# =====================================================================
-# Key extraction per method  (single-pass: generate → slice keys)
-# =====================================================================
-@torch.no_grad()
-def _gen_and_extract(wrapper, ids, mask, max_new_tokens, n_analysis,
-                     num_layers, past_kv=None, temperature=0.6, top_p=0.95):
-    """Generate full response, then extract prefill+decode keys from returned past.
-    Returns (prefill_keys, decode_keys, generated_text)."""
-    acc_len = _past_length(past_kv) if past_kv else 0
-    prompt_len = ids.shape[1]
-
-    gens, gen_past = wrapper.generate_text_batch(
-        ids, mask, max_new_tokens=max_new_tokens,
-        temperature=temperature, top_p=top_p,
-        past_key_values=past_kv)
-
-    gen_text = gens[0]
-    prefill_keys = None
-    decode_keys  = None
-
-    if gen_past is not None:
-        total_in_cache = _past_length(gen_past)
-        decode_start = acc_len + prompt_len
-        gen_len = total_in_cache - decode_start
-        n_dec = min(n_analysis, gen_len)
-
-        prefill_keys = extract_keys_slice(gen_past, 0, decode_start, num_layers)
-        decode_keys  = extract_keys_slice(gen_past, decode_start,
-                                           decode_start + n_dec, num_layers)
-        del gen_past
-    else:
-        # Fallback: re-forward prompt + first n_analysis gen tokens
-        gen_ids = wrapper.tokenize_text(gen_text)
-        n_dec = min(n_analysis, gen_ids.shape[1])
-        analysis_ids = torch.cat([ids, gen_ids[:, :n_dec]], dim=1)
-        analysis_mask = torch.ones_like(analysis_ids)
-        if past_kv is not None:
-            pl = _past_length(past_kv)
-            pm = torch.ones((1, pl), dtype=analysis_mask.dtype, device=wrapper.device)
-            analysis_mask = torch.cat([pm, analysis_mask], dim=1)
-            cpos = torch.arange(pl, pl + analysis_ids.shape[1],
-                                dtype=torch.long, device=wrapper.device)
-        else:
-            cpos = None
-        out = wrapper.model(analysis_ids, attention_mask=analysis_mask,
-                            past_key_values=past_kv, use_cache=True,
-                            cache_position=cpos, return_dict=True)
-        decode_start = acc_len + prompt_len
-        prefill_keys = extract_keys_slice(out.past_key_values, 0, decode_start, num_layers)
-        decode_keys  = extract_keys_slice(out.past_key_values, decode_start,
-                                           decode_start + n_dec, num_layers)
-        del out
-
-    torch.cuda.empty_cache()
-    return prefill_keys, decode_keys, gen_text
-
-# ── baseline ─────────────────────────────────────────────────────────
-@torch.no_grad()
-def extract_baseline(wrapper, question, args, num_layers):
-    msgs = build_agent_messages_single_agent(question=question, args=args)
-    _, ids, mask, _ = wrapper.prepare_chat_input(msgs)
-    return _gen_and_extract(wrapper, ids, mask, args.max_new_tokens,
-                            args.decode_analysis_steps, num_layers,
-                            temperature=args.temperature, top_p=args.top_p)
-
-# ── text_mas ─────────────────────────────────────────────────────────
-@torch.no_grad()
-def extract_text_mas(wrapper, question, args, num_layers):
-    context = ""
-    prefill_per_agent = {}
-
-    for ag in AGENTS:
-        if args.prompt == "hierarchical":
-            msgs = build_agent_messages_hierarchical_text_mas(
-                role=ag.role, question=question, context=context,
-                method="text_mas", args=args)
-        else:
-            msgs = build_agent_messages_sequential_text_mas(
-                role=ag.role, question=question, context=context,
-                method="text_mas", args=args)
-        _, ids, mask, _ = wrapper.prepare_chat_input(msgs)
-
-        if ag.role != "judger":
-            # intermediate agent: generate for context + extract prefill
-            gens, ag_past = wrapper.generate_text_batch(
-                ids, mask, max_new_tokens=args.gen_max_tokens,
-                temperature=args.temperature, top_p=args.top_p)
-            text_out = strip_thinking(gens[0])
-
-            # extract prefill keys (prompt portion only)
-            prompt_len = ids.shape[1]
-            if ag_past is not None:
-                prefill_per_agent[ag.role] = extract_keys_slice(
-                    ag_past, 0, prompt_len, num_layers)
-                del ag_past
-            else:
-                out = wrapper.model(ids, attention_mask=mask, use_cache=True, return_dict=True)
-                prefill_per_agent[ag.role] = extract_keys_from_past(out.past_key_values, num_layers)
-                del out
-
-            if args.prompt == "hierarchical":
-                context += f"[{HIER_NAME[ag.name]}]:\n{text_out}\n\n"
-            else:
-                context += f"[{ag.name}]:\n{text_out}\n\n"
-            torch.cuda.empty_cache()
-        else:
-            pk, dk, _ = _gen_and_extract(
-                wrapper, ids, mask, args.max_new_tokens,
-                args.decode_analysis_steps, num_layers,
-                temperature=args.temperature, top_p=args.top_p)
-            prefill_per_agent[ag.role] = pk
-
-    return prefill_per_agent, dk
-
-# ── latent_mas ───────────────────────────────────────────────────────
-@torch.no_grad()
-def extract_latent_mas(wrapper, question, args, num_layers):
-    accumulated_past = None
+    model = wrapper.model
+    cfg = model.config
     device = wrapper.device
 
-    for ag in AGENTS:
-        if args.prompt == "sequential":
-            msgs = build_agent_message_sequential_latent_mas(
-                role=ag.role, question=question, context="",
-                method="latent_mas", args=args)
-        else:
-            msgs = build_agent_message_hierarchical_latent_mas(
-                role=ag.role, question=question, context="",
-                method="latent_mas", args=args)
-        prompt_text = wrapper.render_chat(msgs, add_generation_prompt=True)
+    n_q = cfg.num_attention_heads
+    n_kv = getattr(cfg, "num_key_value_heads", n_q)
+    head_dim = getattr(cfg, "head_dim", cfg.hidden_size // n_q)
+    num_layers = cfg.num_hidden_layers
 
-        if ag.role != "judger":
-            wrapped = f"{prompt_text}<think>" if args.think else prompt_text
-            enc = wrapper.tokenizer(wrapped, return_tensors="pt", add_special_tokens=False)
-            w_ids = enc["input_ids"].to(device)
-            w_mask = enc["attention_mask"].to(device)
-            accumulated_past = wrapper.generate_latent_batch(
-                w_ids, w_mask, latent_steps=args.latent_steps,
-                past_key_values=accumulated_past)
-        else:
-            judger_text = f"{prompt_text}<think>" if args.think else prompt_text
-            enc = wrapper.tokenizer(judger_text, return_tensors="pt", add_special_tokens=False)
-            j_ids = enc["input_ids"].to(device)
-            j_mask = enc["attention_mask"].to(device)
-            past_for_gen = accumulated_past if args.latent_steps > 0 else None
-            pk, dk, _ = _gen_and_extract(
-                wrapper, j_ids, j_mask, args.max_new_tokens,
-                args.decode_analysis_steps, num_layers,
-                past_kv=past_for_gen,
-                temperature=args.temperature, top_p=args.top_p)
+    layers, rotary = _locate_modules(model)
 
-    del accumulated_past; torch.cuda.empty_cache()
-    return pk, dk
+    msgs = build_agent_messages_single_agent(question=question, args=args)
+    prompt_text, input_ids, attention_mask, tokens = wrapper.prepare_chat_input(msgs)
+
+    raw_q: Dict[int, torch.Tensor] = {}
+    raw_k: Dict[int, torch.Tensor] = {}
+    raw_v: Dict[int, torch.Tensor] = {}
+    raw_ho: Dict[int, torch.Tensor] = {}
+    rope_cossin: Dict[str, torch.Tensor] = {}
+    handles = []
+
+    def make_proj_hook(store, lidx):
+        def hook(_module, _inp, out):
+            store[lidx] = out.detach()
+        return hook
+
+    def make_oproj_pre_hook(lidx):
+        def hook(_module, inp):
+            # inp[0]: [B, seq, n_q*head_dim] == per-head outputs before o_proj
+            raw_ho[lidx] = inp[0].detach()
+            return None  # do not modify -> model behavior unchanged
+        return hook
+
+    def rope_hook(_module, _inp, out):
+        # out == (cos, sin), each [B, seq, head_dim]
+        cos, sin = out
+        rope_cossin["cos"] = cos.detach()
+        rope_cossin["sin"] = sin.detach()
+
+    try:
+        handles.append(rotary.register_forward_hook(rope_hook))
+        for li, layer in enumerate(layers):
+            sa = layer.self_attn
+            handles.append(sa.q_proj.register_forward_hook(make_proj_hook(raw_q, li)))
+            handles.append(sa.k_proj.register_forward_hook(make_proj_hook(raw_k, li)))
+            handles.append(sa.v_proj.register_forward_hook(make_proj_hook(raw_v, li)))
+            handles.append(sa.o_proj.register_forward_pre_hook(make_oproj_pre_hook(li)))
+
+        out = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=False,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+        hidden_states = out.hidden_states  # tuple len = num_layers + 1
+    finally:
+        for h in handles:
+            h.remove()
+
+    if "cos" not in rope_cossin:
+        raise RuntimeError(
+            "RoPE cos/sin were not captured — the rotary_emb forward hook did not "
+            "fire. The model may compute rotary embeddings elsewhere.")
+
+    cos = rope_cossin["cos"].to(torch.float32)
+    sin = rope_cossin["sin"].to(torch.float32)
+
+    q_out: Dict[int, np.ndarray] = {}
+    k_out: Dict[int, np.ndarray] = {}
+    v_out: Dict[int, np.ndarray] = {}
+    ho_out: Dict[int, np.ndarray] = {}
+    hs_out: Dict[int, np.ndarray] = {}
+
+    seq = input_ids.shape[1]
+    for li, layer in enumerate(layers):
+        sa = layer.self_attn
+
+        # ---- Q : pre-RoPE [B, seq, n_q*hd] -> q_norm -> RoPE ----
+        q = raw_q[li].view(1, seq, n_q, head_dim)
+        if getattr(sa, "q_norm", None) is not None:
+            q = sa.q_norm(q)
+        q = q.transpose(1, 2).to(torch.float32)            # [1, n_q, seq, hd]
+        q = _apply_rope(q, cos, sin)
+        q_out[li] = q[0].cpu().numpy()                     # [n_q, seq, hd]
+
+        # ---- K : pre-RoPE [B, seq, n_kv*hd] -> k_norm -> RoPE ----
+        k = raw_k[li].view(1, seq, n_kv, head_dim)
+        if getattr(sa, "k_norm", None) is not None:
+            k = sa.k_norm(k)
+        k = k.transpose(1, 2).to(torch.float32)            # [1, n_kv, seq, hd]
+        k = _apply_rope(k, cos, sin)
+        k_out[li] = k[0].cpu().numpy()                     # [n_kv, seq, hd]
+
+        # ---- V : no RoPE ----
+        v = raw_v[li].view(1, seq, n_kv, head_dim).transpose(1, 2).to(torch.float32)
+        v_out[li] = v[0].cpu().numpy()                     # [n_kv, seq, hd]
+
+        # ---- head_output : pre-o_proj [B, seq, n_q*hd] ----
+        ho = raw_ho[li].view(1, seq, n_q, head_dim).transpose(1, 2).to(torch.float32)
+        ho_out[li] = ho[0].cpu().numpy()                   # [n_q, seq, hd]
+
+        # free this layer's GPU captures immediately (lower peak GPU memory)
+        raw_q[li] = raw_k[li] = raw_v[li] = raw_ho[li] = None
+        del q, k, v, ho
+
+    for idx, hs in enumerate(hidden_states):
+        hs_out[idx] = hs[0].to(torch.float32).cpu().numpy()   # [seq, hidden]
+
+    del raw_q, raw_k, raw_v, raw_ho, out, hidden_states, cos, sin
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return {
+        "prompt_text": prompt_text,
+        "input_ids": input_ids.detach().cpu(),
+        "tokens": tokens,
+        "q": q_out,
+        "k": k_out,
+        "v": v_out,
+        "head_output": ho_out,
+        "hidden_states": hs_out,
+        "meta": {
+            "num_layers": num_layers,
+            "num_attention_heads": n_q,
+            "num_key_value_heads": n_kv,
+            "head_dim": head_dim,
+        },
+    }
+
 
 # =====================================================================
-# Plotting
+# Per-pair metric computation
 # =====================================================================
-def plot_scatter_grid(layer_data, num_layers, out_tpl, title_prefix, use_tsne):
-    layers_per_fig = 16
-    for fi in range(math.ceil(num_layers / layers_per_fig)):
-        s, e = fi*layers_per_fig, min((fi+1)*layers_per_fig, num_layers)
-        fig, axes = plt.subplots(4, 4, figsize=(20, 20))
-        tag = "t-SNE" if use_tsne else "PCA"
-        fig.suptitle(f"{title_prefix} ({tag}) — Layers {s}–{e-1}", fontsize=14)
-        for pos in range(16):
-            ax = axes[pos//4][pos%4]; li = s+pos
-            if li >= num_layers or li not in layer_data:
-                ax.set_visible(False); continue
-            ax.set_title(f"Layer {li}", fontsize=9)
-            for pts, col, alpha, label in layer_data[li]:
-                if len(pts): ax.scatter(pts[:,0], pts[:,1], c=[col], alpha=alpha, s=6, label=label)
-            ax.tick_params(labelsize=6)
-        seen = {}
-        for pos in range(min(e-s,16)):
-            for h, lb in zip(*axes[pos//4][pos%4].get_legend_handles_labels()):
-                if lb not in seen: seen[lb] = h
-        if seen: fig.legend(seen.values(), seen.keys(), loc="upper right", fontsize=7)
-        plt.tight_layout(rect=[0,0,1,0.96])
-        t = "tsne" if use_tsne else "pca"
-        p = out_tpl.replace("{tag}",t).replace("{layers}",f"layers{s:02d}-{e-1:02d}")
-        fig.savefig(p, dpi=150, bbox_inches="tight"); plt.close(fig); print(f"    → {p}")
-
-def dim_reduce_plots(vecs, num_layers, out_tpl, title):
-    for use_tsne in [False, True]:
-        ld = {}
+def compute_headwise_qkv_metrics(act_a, act_b, pair, tid, skip,
+                                 num_layers, args, rng) -> Tuple[List[Dict], List[Dict]]:
+    """Returns (metric_rows, heatmap_rows) for Q/K/V head-wise comparison."""
+    rows, hm = [], []
+    comp_spec = [("q", "q_head"), ("k", "kv_head"), ("v", "kv_head")]
+    for comp, head_type in comp_spec:
+        A, B = act_a[comp], act_b[comp]
         for l in range(num_layers):
-            items = vecs.get(l, [])
-            all_pts = [v[0] for v in items if len(v[0])>0]
-            if not all_pts: continue
-            combined = np.vstack(all_pts)
-            if combined.shape[0] < 4: continue
-            try:
-                if use_tsne:
-                    proj = TSNE(n_components=2, perplexity=max(2,min(30,combined.shape[0]-1)),
-                                random_state=42, max_iter=500).fit_transform(combined)
-                else:
-                    proj = PCA(n_components=min(2,*combined.shape)).fit_transform(combined)
-            except Exception: continue
-            entries = []; off = 0
-            for pts_o,c,a,lb in items:
-                n=len(pts_o)
-                entries.append((proj[off:off+n] if n else np.empty((0,2)), c, a, lb)); off+=n
-            ld[l] = entries
-        plot_scatter_grid(ld, num_layers, out_tpl, title, use_tsne)
+            a, b = A.get(l), B.get(l)
+            if a is None or b is None:
+                continue
+            n_heads = a.shape[0]
+            aq = a[:, skip:, :]
+            bq = b[:, skip:, :]
+            na, nb = aq.shape[1], bq.shape[1]
+            for h in range(n_heads):
+                X, Y = aq[h], bq[h]            # [n, hd]
+                mpc = mean_pairwise_cosine(X, Y)
+                mmc = maxmatch_cosine(X, Y)
+                cka, status = cka_for_pair(X, Y, args.align_tokens_for_cka, rng)
+                mmd = rbf_mmd2(X, Y, max_tokens=args.max_mmd_tokens, rng=rng)
+                rows.append({
+                    "task_id": tid, "pair": pair, "component": comp,
+                    "layer": l, "head": h, "head_type": head_type,
+                    "mean_pairwise_cosine": round(mpc, 6),
+                    "maxmatch_cosine": round(mmc, 6),
+                    "cka_linear": (round(cka, 6) if cka == cka else float("nan")),
+                    "cka_status": status,
+                    "mmd_rbf": round(mmd, 6),
+                    "n_tokens_a": na, "n_tokens_b": nb, "prefix_skip": skip,
+                })
+                hm.append({"task_id": tid, "pair": pair, "metric": "maxmatch_cosine",
+                           "component": comp, "layer": l, "head": h, "value": round(mmc, 6)})
+                hm.append({"task_id": tid, "pair": pair, "metric": "mmd_rbf",
+                           "component": comp, "layer": l, "head": h, "value": round(mmd, 6)})
+    return rows, hm
 
-def plot_activation_diff_grid(act_dict, path, title_prefix, num_layers, num_kv):
-    """2×3 grid of layer×head activation-difference heatmaps.
-    Row 1: orig↔ver1, orig↔ver2, orig↔ver3
-    Row 2: ver1↔ver2, ver1↔ver3, ver2↔ver3
+
+def compute_head_output_metrics(act_a, act_b, pair, tid, skip,
+                                num_layers, args, rng) -> Tuple[List[Dict], List[Dict]]:
+    rows, hm = [], []
+    A, B = act_a["head_output"], act_b["head_output"]
+    for l in range(num_layers):
+        a, b = A.get(l), B.get(l)
+        if a is None or b is None:
+            continue
+        n_heads = a.shape[0]
+        aq, bq = a[:, skip:, :], b[:, skip:, :]
+        na, nb = aq.shape[1], bq.shape[1]
+        for h in range(n_heads):
+            X, Y = aq[h], bq[h]
+            mpc = mean_pairwise_cosine(X, Y)
+            mmc = maxmatch_cosine(X, Y)
+            l2m = l2_mean(X, Y)
+            mmd = rbf_mmd2(X, Y, max_tokens=args.max_mmd_tokens, rng=rng)
+            cka, status = cka_for_pair(X, Y, args.align_tokens_for_cka, rng)
+            rows.append({
+                "task_id": tid, "pair": pair, "layer": l, "head": h,
+                "mean_pairwise_cosine": round(mpc, 6),
+                "maxmatch_cosine": round(mmc, 6),
+                "l2_mean": round(l2m, 6),
+                "mmd_rbf": round(mmd, 6),
+                "cka_linear": (round(cka, 6) if cka == cka else float("nan")),
+                "cka_status": status,
+                "n_tokens_a": na, "n_tokens_b": nb, "prefix_skip": skip,
+            })
+            hm.append({"task_id": tid, "pair": pair, "metric": "head_output_maxmatch_cosine",
+                       "component": "head_output", "layer": l, "head": h, "value": round(mmc, 6)})
+            hm.append({"task_id": tid, "pair": pair, "metric": "head_output_mmd_rbf",
+                       "component": "head_output", "layer": l, "head": h, "value": round(mmd, 6)})
+    return rows, hm
+
+
+def compute_residual_stream_metrics(act_a, act_b, pair, tid, skip,
+                                    num_layers, args, rng) -> Tuple[List[Dict], List[Dict]]:
+    rows, hm = [], []
+    A, B = act_a["hidden_states"], act_b["hidden_states"]
+    # hidden_states[0] = embedding, hidden_states[l+1] = block l output
+    for idx in sorted(A.keys()):
+        a, b = A.get(idx), B.get(idx)
+        if a is None or b is None:
+            continue
+        X, Y = a[skip:, :], b[skip:, :]
+        na, nb = X.shape[0], Y.shape[0]
+        mpc = mean_pairwise_cosine(X, Y)
+        mmc = maxmatch_cosine(X, Y)
+        cka, status = cka_for_pair(X, Y, args.align_tokens_for_cka, rng)
+        mmd = rbf_mmd2(X, Y, max_tokens=args.max_mmd_tokens, rng=rng)
+        rows.append({
+            "task_id": tid, "pair": pair, "layer": idx,
+            "mean_pairwise_cosine": round(mpc, 6),
+            "maxmatch_cosine": round(mmc, 6),
+            "cka_linear": (round(cka, 6) if cka == cka else float("nan")),
+            "cka_status": status,
+            "mmd_rbf": round(mmd, 6),
+            "n_tokens_a": na, "n_tokens_b": nb, "prefix_skip": skip,
+        })
+        hm.append({"task_id": tid, "pair": pair, "metric": "residual_cka_linear",
+                   "component": "residual", "layer": idx, "head": -1,
+                   "value": (round(cka, 6) if cka == cka else float("nan"))})
+        hm.append({"task_id": tid, "pair": pair, "metric": "residual_maxmatch_cosine",
+                   "component": "residual", "layer": idx, "head": -1, "value": round(mmc, 6)})
+    return rows, hm
+
+
+# =====================================================================
+# Output helpers
+# =====================================================================
+def write_csv(path: str, rows: List[Dict]):
+    if not rows:
+        print(f"  (no rows for {os.path.basename(path)})")
+        return
+    # union of keys preserves first-row order then appends any extra
+    fieldnames = list(rows[0].keys())
+    for r in rows:
+        for k in r:
+            if k not in fieldnames:
+                fieldnames.append(k)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+    print(f"  CSV → {path}  ({len(rows)} rows)")
+
+
+def save_heatmap_long_csv(path: str, rows: List[Dict]):
+    write_csv(path, rows)
+
+
+def plot_raw_heatmap(heatmap_rows: List[Dict], metric: str, component: str,
+                     out_path: str, num_layers: int, normalize: str = "raw"):
+    """Aggregate heatmap_rows (mean over tasks) into a [layer x head] grid and save PNG.
+
+    normalize: 'raw' uses values as-is; 'global' min-max normalizes the whole grid.
     """
-    pairs = [
-        ("original","version1"), ("original","version2"), ("original","version3"),
-        ("version1","version2"), ("version1","version3"), ("version2","version3"),
-    ]
-    labels = [
-        "orig ↔ ver1", "orig ↔ ver2", "orig ↔ ver3",
-        "ver1 ↔ ver2", "ver1 ↔ ver3", "ver2 ↔ ver3",
-    ]
+    cells = defaultdict(list)
+    max_head = 0
+    for r in heatmap_rows:
+        if r["metric"] != metric or r["component"] != component:
+            continue
+        v = r["value"]
+        if v != v:   # NaN
+            continue
+        cells[(r["layer"], r["head"])].append(v)
+        max_head = max(max_head, r["head"])
+    if not cells:
+        return
+    is_residual = (max_head < 0) or (component == "residual")
+    n_head = 1 if is_residual else max_head + 1
+    grid = np.full((num_layers, n_head), np.nan)
+    for (l, h), vals in cells.items():
+        col = 0 if is_residual else h
+        if 0 <= l < num_layers and 0 <= col < n_head:
+            grid[l, col] = float(np.mean(vals))
 
-    fig, axes = plt.subplots(2, 3, figsize=(max(14, num_kv*2.2), max(12, num_layers*0.35)))
-    fig.suptitle(title_prefix, fontsize=14, y=1.01)
+    plot_grid = grid.copy()
+    if normalize == "global":
+        finite = plot_grid[np.isfinite(plot_grid)]
+        if finite.size:
+            lo, hi = finite.min(), finite.max()
+            if hi - lo > 1e-12:
+                plot_grid = (plot_grid - lo) / (hi - lo)
 
-    # compute all diffs first to find global max for shared color scale
-    diffs = []
-    for va, vb in pairs:
-        a = act_dict.get(va, np.zeros((num_layers, num_kv)))
-        b = act_dict.get(vb, np.zeros((num_layers, num_kv)))
-        diff = np.abs(a - b)
-        # per-layer normalize for visibility
-        for l in range(num_layers):
-            rmax = diff[l].max()
-            if rmax > 1e-12:
-                diff[l] /= rmax
-        diffs.append(diff)
-
-    for idx, (diff, label) in enumerate(zip(diffs, labels)):
-        ax = axes[idx // 3][idx % 3]
-        im = ax.imshow(diff, aspect="auto", cmap="inferno", vmin=0, vmax=1,
-                       interpolation="nearest")
-        ax.set_title(label, fontsize=11, fontweight="bold")
-        ax.set_xlabel("KV Head (GQA)", fontsize=8)
-        ax.set_ylabel("Layer", fontsize=8)
-        ax.set_yticks(range(0, num_layers, max(1, num_layers//12)))
-        ax.set_xticks(range(num_kv))
-        ax.tick_params(labelsize=6)
-
-    fig.colorbar(im, ax=axes, shrink=0.6, label="|Δ activation| (per-layer norm)")
+    fig, ax = plt.subplots(figsize=(max(6, n_head * 0.5), max(6, num_layers * 0.3)))
+    im = ax.imshow(plot_grid, aspect="auto", cmap="viridis", interpolation="nearest")
+    ax.set_title(f"{component} · {metric} ({normalize})", fontsize=11, fontweight="bold")
+    ax.set_xlabel("Head" if not is_residual else "(residual)")
+    ax.set_ylabel("Layer")
+    ax.set_yticks(range(0, num_layers, max(1, num_layers // 12)))
+    if not is_residual:
+        ax.set_xticks(range(0, n_head, max(1, n_head // 16)))
+    fig.colorbar(im, ax=ax, shrink=0.7,
+                 label="value" if normalize == "raw" else "global-normalized")
     plt.tight_layout()
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"    → {path}")
+    print(f"    → {out_path}")
+
+
+def optional_pca_plot(act_by_ver: Dict[str, Dict], component: str,
+                      num_layers: int, out_path: str):
+    """Disabled by default. Minimal per-layer PCA scatter of head_output / Q tokens."""
+    try:
+        from sklearn.decomposition import PCA
+    except Exception:
+        print("  (PCA requested but sklearn unavailable — skipping)")
+        return
+    colors = {"original": "tab:red", "version1": "tab:purple",
+              "version2": "tab:green", "version3": "tab:blue"}
+    per_fig = 16
+    n_fig = math.ceil(num_layers / per_fig)
+    for fi in range(n_fig):
+        s, e = fi * per_fig, min((fi + 1) * per_fig, num_layers)
+        fig, axes = plt.subplots(4, 4, figsize=(18, 18))
+        for pos in range(16):
+            ax = axes[pos // 4][pos % 4]
+            li = s + pos
+            if li >= num_layers:
+                ax.set_visible(False); continue
+            mats, cols = [], []
+            for ver in VER_LABELS:
+                comp = act_by_ver.get(ver)
+                if not comp:
+                    continue
+                arr = comp[component].get(li)
+                if arr is None:
+                    continue
+                flat = arr.reshape(-1, arr.shape[-1]) if arr.ndim == 3 else arr
+                mats.append(flat); cols += [ver] * flat.shape[0]
+            if not mats:
+                ax.set_visible(False); continue
+            allm = np.vstack(mats)
+            if allm.shape[0] < 3:
+                ax.set_visible(False); continue
+            try:
+                proj = PCA(n_components=2).fit_transform(allm)
+            except Exception:
+                ax.set_visible(False); continue
+            for ver in VER_LABELS:
+                m = [i for i, c in enumerate(cols) if c == ver]
+                if m:
+                    ax.scatter(proj[m, 0], proj[m, 1], s=5, alpha=0.5,
+                               c=colors[ver], label=ver)
+            ax.set_title(f"L{li}", fontsize=8)
+            ax.tick_params(labelsize=6)
+        p = out_path.replace("{layers}", f"L{s:02d}-{e-1:02d}")
+        fig.savefig(p, dpi=120, bbox_inches="tight")
+        plt.close(fig)
+        print(f"    → {p}")
+
 
 # =====================================================================
-# Main analysis loop
+# Optional decode analysis (deterministic by default, JS/t-SNE removed)
 # =====================================================================
-def analyze_method(wrapper, method, items, args, plots_dir, model_tag):
-    num_layers = wrapper.model.config.num_hidden_layers
-    num_kv = getattr(wrapper.model.config, "num_key_value_heads",
-                     wrapper.model.config.num_attention_heads)
-    n_q = wrapper.model.config.num_attention_heads
-    print(f"  GQA: {n_q} Q-heads → {num_kv} KV-heads (ratio {n_q//num_kv}:1)")
-    n_dec_steps = args.decode_analysis_steps
+@torch.no_grad()
+def analyze_decode_baseline(wrapper, qs, args, num_layers, tid, model_tag, plots_dir):
+    """Light decode-stage K-cache cosine analysis. Optional, off by default.
 
-    # per-phase accumulators
-    P, D = "prefill", "decode"
-    csv_rows = {P:[], D:[]}
-    act_acc  = {ph: {v: np.zeros((num_layers, num_kv)) for v in VER_LABELS} for ph in [P,D]}
-    act_n    = {ph: {v:0 for v in VER_LABELS} for ph in [P,D]}
-    pca_vecs = {ph: defaultdict(list) for ph in [P,D]}
+    Generation mode is deterministic (greedy) when --deterministic is set, else
+    sampling (recorded as decode_mode=free_generation in metadata). To stay
+    version-robust we (1) generate token ids, then (2) re-run a single forward
+    over prompt+generated tokens with use_cache=True and read the K cache for the
+    decode positions, instead of relying on generate() returning past_key_values.
+    """
+    def gen_keys(question):
+        msgs = build_agent_messages_single_agent(question=question, args=args)
+        _, ids, mask, _ = wrapper.prepare_chat_input(msgs)
+        do_sample = not args.deterministic
+        gen = wrapper.model.generate(
+            input_ids=ids, attention_mask=mask,
+            max_new_tokens=args.decode_analysis_steps,
+            do_sample=do_sample,
+            temperature=(args.temperature if do_sample else None),
+            top_p=(args.top_p if do_sample else None),
+            pad_token_id=wrapper.tokenizer.pad_token_id,
+            use_cache=True,
+        )
+        seqs = gen[0] if isinstance(gen, (tuple, list)) else gen
+        prompt_len = ids.shape[1]
+        full = seqs[:, : prompt_len + args.decode_analysis_steps]
+        full_mask = torch.ones_like(full)
+        out = wrapper.model(input_ids=full, attention_mask=full_mask,
+                            use_cache=True, return_dict=True)
+        pkv = out.past_key_values
+        keys = {}
+        for l in range(num_layers):
+            if hasattr(pkv, "key_cache"):
+                kl = pkv.key_cache[l]
+            else:
+                kl = pkv[l][0] if isinstance(pkv[l], (tuple, list)) else pkv[l]
+            keys[l] = kl[0, :, prompt_len:, :].detach().cpu().float().numpy()
+        del out
+        return keys
+
+    key_by_ver = {}
+    for ver in VER_LABELS:
+        if qs.get(ver):
+            try:
+                key_by_ver[ver] = gen_keys(qs[ver])
+            except Exception as ex:
+                print(f"  decode gen failed for {ver}: {ex}")
+    rows = []
+    for (va, vb) in PAIRS:
+        ka, kb = key_by_ver.get(va), key_by_ver.get(vb)
+        if not ka or not kb:
+            continue
+        for l in range(num_layers):
+            a, b = ka.get(l), kb.get(l)
+            if a is None or b is None or a.size == 0 or b.size == 0:
+                continue
+            steps = min(a.shape[1], b.shape[1])
+            for s in range(steps):
+                X = a[:, s, :]; Y = b[:, s, :]
+                rows.append({
+                    "task_id": tid, "pair": f"{va}_vs_{vb}", "layer": l,
+                    "decode_step": s,
+                    "mean_pairwise_cosine": round(mean_pairwise_cosine(X, Y), 6),
+                    "maxmatch_cosine": round(maxmatch_cosine(X, Y), 6),
+                })
+    return rows
+
+
+# =====================================================================
+# Main analysis (baseline = primary)
+# =====================================================================
+def analyze_baseline_headwise(wrapper, items, args, plots_dir, model_tag):
+    cfg = wrapper.model.config
+    num_layers = cfg.num_hidden_layers
+    n_q = cfg.num_attention_heads
+    n_kv = getattr(cfg, "num_key_value_heads", n_q)
+    head_dim = getattr(cfg, "head_dim", cfg.hidden_size // n_q)
+    print(f"  GQA: {n_q} Q-heads -> {n_kv} KV-heads | head_dim={head_dim} | layers={num_layers}")
+
+    rng = np.random.default_rng(args.seed)
+    prefix = f"baseline_{args.task}_{model_tag}"
+
+    qkv_rows, ho_rows, res_rows, hm_rows, decode_rows = [], [], [], [], []
+    # for optional PCA on the last task only (keeps memory bounded)
+    last_acts: Dict[str, Dict] = {}
 
     for ti, item in enumerate(items):
-        tid = item["task_id"]
-        qs = {v: item.get(v if v != "original" else "question", "")
-              for v in VER_LABELS}
-        qs["original"] = item["question"]
-        print(f"  task {tid}  ({ti+1}/{len(items)})")
+        tid = item.get("task_id", ti)
+        qs = {"original": item["question"]}
+        for v in ["version1", "version2", "version3"]:
+            qs[v] = item.get(v, "")
+        print(f"  task {tid}  ({ti + 1}/{len(items)})")
 
-        all_pf, all_dk = {}, {}       # ver → keys
+        acts: Dict[str, Dict] = {}
+        prompts: Dict[str, str] = {}
         for ver in VER_LABELS:
-            q = qs[ver]
+            q = qs.get(ver)
             if not q:
-                all_pf[ver] = all_dk[ver] = None; continue
-            if method == "baseline":
-                pk, dk, _ = extract_baseline(wrapper, q, args, num_layers)
-                all_pf[ver] = pk; all_dk[ver] = dk
-            elif method == "text_mas":
-                pka, dk = extract_text_mas(wrapper, q, args, num_layers)
-                all_pf[ver] = pka; all_dk[ver] = dk
-            elif method == "latent_mas":
-                pk, dk = extract_latent_mas(wrapper, q, args, num_layers)
-                all_pf[ver] = pk; all_dk[ver] = dk
+                continue
+            a = collect_baseline_prefill_activations(wrapper, q, args)
+            acts[ver] = a
+            prompts[ver] = a["prompt_text"]
+            if args.save_raw_tensors and ti < 1:
+                np.savez_compressed(
+                    os.path.join(plots_dir, f"{prefix}_raw_tensors_task{tid}_{ver}.npz"),
+                    **{f"q_{l}": a["q"][l] for l in a["q"]},
+                    **{f"k_{l}": a["k"][l] for l in a["k"]},
+                    **{f"v_{l}": a["v"][l] for l in a["v"]},
+                    **{f"ho_{l}": a["head_output"][l] for l in a["head_output"]},
+                    **{f"hs_{l}": a["hidden_states"][l] for l in a["hidden_states"]},
+                )
             gc.collect(); torch.cuda.empty_cache()
 
-        # ── helper: "final" keys for metrics ──
-        def fk(ver, phase):
-            src = all_pf if phase == P else all_dk
-            k = src.get(ver)
-            if k is None: return None
-            if method == "text_mas" and phase == P and isinstance(k, dict):
-                return k.get("judger")
-            return k
+        # common prefix per pair
+        for (va, vb) in PAIRS:
+            if va not in acts or vb not in acts:
+                continue
+            skip = common_prefix_len(wrapper.tokenizer, prompts[va], prompts[vb])
+            pair = f"{va}_vs_{vb}"
+            if ti == 0 and va == "original" and vb == "version1":
+                tot = next(iter(acts[va]["q"].values())).shape[1]
+                print(f"    prefix-skip={skip}  total_tokens={tot}  question-only={tot - skip}")
 
-        # ── helper: render prompt text for common-prefix detection ──
-        def render_prompt(question):
-            if method == "baseline":
-                msgs = build_agent_messages_single_agent(question=question, args=args)
-            elif method == "text_mas":
-                # use judger prompt (context="" — prefix is the same for all versions)
-                if args.prompt == "hierarchical":
-                    msgs = build_agent_messages_hierarchical_text_mas(
-                        role="judger", question=question, context="",
-                        method="text_mas", args=args)
-                else:
-                    msgs = build_agent_messages_sequential_text_mas(
-                        role="judger", question=question, context="",
-                        method="text_mas", args=args)
-            elif method == "latent_mas":
-                if args.prompt == "sequential":
-                    msgs = build_agent_message_sequential_latent_mas(
-                        role="judger", question=question, context="",
-                        method="latent_mas", args=args)
-                else:
-                    msgs = build_agent_message_hierarchical_latent_mas(
-                        role="judger", question=question, context="",
-                        method="latent_mas", args=args)
-            txt = wrapper.render_chat(msgs, add_generation_prompt=True)
-            if args.think: txt += "<think>"
-            return txt
+            r1, h1 = compute_headwise_qkv_metrics(acts[va], acts[vb], pair, tid, skip,
+                                                  num_layers, args, rng)
+            r2, h2 = compute_head_output_metrics(acts[va], acts[vb], pair, tid, skip,
+                                                 num_layers, args, rng)
+            r3, h3 = compute_residual_stream_metrics(acts[va], acts[vb], pair, tid, skip,
+                                                     num_layers, args, rng)
+            qkv_rows += r1; ho_rows += r2; res_rows += r3
+            hm_rows += h1 + h2 + h3
 
-        # ====== PREFILL metrics (pairwise cosine on question-specific tokens) ======
-        orig_p = fk("original", P)
-        if orig_p:
-            # pre-compute common prefix lengths per pair
-            prompt_cache = {}
-            for ver in VER_LABELS:
-                q = qs[ver]
-                if q: prompt_cache[ver] = render_prompt(q)
+        if args.analyze_decode:
+            decode_rows += analyze_decode_baseline(
+                wrapper, qs, args, num_layers, tid, model_tag, plots_dir)
 
-            pair_skip = {}  # (va, vb) → common prefix token count
-            for va, vb in [("original","version1"),("original","version2"),
-                           ("original","version3"),("version1","version2"),
-                           ("version1","version3"),("version2","version3")]:
-                pa, pb = prompt_cache.get(va), prompt_cache.get(vb)
-                if pa and pb:
-                    pair_skip[(va,vb)] = common_prefix_len(wrapper.tokenizer, pa, pb)
-                else:
-                    pair_skip[(va,vb)] = 0
+        if ti == len(items) - 1 and not args.disable_pca:
+            last_acts = acts
+        else:
+            del acts; gc.collect(); torch.cuda.empty_cache()
 
-            pm = {}
-            for a,b in pair_skip:
-                ka,kb = fk(a,P), fk(b,P)
-                skip = pair_skip[(a,b)]
-                if ka and kb:
-                    pm[(a,b)] = layer_metrics_prefill(ka, kb, num_layers,
-                                                       skip_a=skip, skip_b=skip)
-                    if a == "original" and b == "version1" and ti == 0:
-                        total_a = next(iter(ka.values())).shape[1] if ka else 0
-                        print(f"    prefix-skip={skip}  total_tokens={total_a}  "
-                              f"question-only={total_a - skip}")
+    # ── write required CSVs ──
+    write_csv(os.path.join(plots_dir, f"{prefix}_prefill_qkv_headwise_metrics.csv"), qkv_rows)
+    write_csv(os.path.join(plots_dir, f"{prefix}_prefill_head_output_metrics.csv"), ho_rows)
+    write_csv(os.path.join(plots_dir, f"{prefix}_prefill_residual_stream_metrics.csv"), res_rows)
+    save_heatmap_long_csv(os.path.join(plots_dir, f"{prefix}_heatmap_long.csv"), hm_rows)
+    if args.analyze_decode and decode_rows:
+        write_csv(os.path.join(plots_dir, f"{prefix}_decode_key_metrics.csv"), decode_rows)
 
-            for l in range(num_layers):
-                row = {"task_id":tid, "layer":l}
-                for v in ["version1","version2","version3"]:
-                    m=pm.get(("original",v))
-                    row[f"{v}_cos"]=round(m[l][0],3) if m else float("nan")
-                    row[f"{v}_js"] =round(m[l][1],3) if m else float("nan")
-                for lbl,va,vb in [("ver1to2","version1","version2"),
-                                  ("ver1to3","version1","version3"),
-                                  ("ver2to3","version2","version3")]:
-                    m=pm.get((va,vb))
-                    row[f"{lbl}_cos"]=round(m[l][0],3) if m else float("nan")
-                    row[f"{lbl}_js"] =round(m[l][1],3) if m else float("nan")
-                csv_rows[P].append(row)
+    # ── optional component heatmap raw CSVs ──
+    def hm_subset(metric, component):
+        return [r for r in hm_rows if r["metric"] == metric and r["component"] == component]
+    write_csv(os.path.join(plots_dir, f"{prefix}_heatmap_q_cosine_raw.csv"),
+              hm_subset("maxmatch_cosine", "q"))
+    write_csv(os.path.join(plots_dir, f"{prefix}_heatmap_k_cosine_raw.csv"),
+              hm_subset("maxmatch_cosine", "k"))
+    write_csv(os.path.join(plots_dir, f"{prefix}_heatmap_v_cosine_raw.csv"),
+              hm_subset("maxmatch_cosine", "v"))
+    write_csv(os.path.join(plots_dir, f"{prefix}_heatmap_head_output_cosine_raw.csv"),
+              hm_subset("head_output_maxmatch_cosine", "head_output"))
+    write_csv(os.path.join(plots_dir, f"{prefix}_heatmap_residual_cka_raw.csv"),
+              hm_subset("residual_cka_linear", "residual"))
 
-        # ====== DECODE metrics (per-step × per-layer) ======
-        orig_d = fk("original", D)
-        if orig_d:
-            actual_steps = min(n_dec_steps,
-                               min(orig_d[l].shape[1] for l in orig_d if orig_d[l].size > 0)
-                               if orig_d else 0)
-            for step in range(actual_steps):
-                for l in range(num_layers):
-                    row = {"task_id":tid, "decode_step":step, "layer":l}
-                    for v in ["version1","version2","version3"]:
-                        kv = fk(v, D)
-                        if kv:
-                            c,j = layer_metrics_step(orig_d, kv, l, step)
-                        else:
-                            c,j = float("nan"), float("nan")
-                        row[f"{v}_cos"]=round(c,3); row[f"{v}_js"]=round(j,3)
-                    for lbl,va,vb in [("ver1to2","version1","version2"),
-                                      ("ver1to3","version1","version3"),
-                                      ("ver2to3","version2","version3")]:
-                        ka2, kb2 = fk(va,D), fk(vb,D)
-                        if ka2 and kb2:
-                            c,j = layer_metrics_step(ka2,kb2,l,step)
-                        else:
-                            c,j = float("nan"),float("nan")
-                        row[f"{lbl}_cos"]=round(c,3); row[f"{lbl}_js"]=round(j,3)
-                    csv_rows[D].append(row)
+    # ── optional PNG heatmaps (raw + global only) ──
+    if args.make_heatmaps:
+        specs = [
+            ("maxmatch_cosine", "q", "q_maxmatch_cosine"),
+            ("maxmatch_cosine", "k", "k_maxmatch_cosine"),
+            ("maxmatch_cosine", "v", "v_maxmatch_cosine"),
+            ("head_output_maxmatch_cosine", "head_output", "head_output_maxmatch_cosine"),
+            ("head_output_mmd_rbf", "head_output", "head_output_mmd_rbf"),
+            ("residual_maxmatch_cosine", "residual", "residual_maxmatch_cosine"),
+        ]
+        for metric, component, tag in specs:
+            for norm in ("raw", "global"):
+                suffix = "raw" if norm == "raw" else "globalnorm"
+                plot_raw_heatmap(
+                    hm_rows, metric, component,
+                    os.path.join(plots_dir, f"{prefix}_heatmap_{tag}_{suffix}.png"),
+                    num_layers, normalize=norm)
 
-        # ====== Activation + PCA/t-SNE for BOTH phases ======
-        for ph in [P, D]:
-            for ver in VER_LABELS:
-                k = fk(ver, ph)
-                if k is None: continue
-                # activation running mean
-                a = activation_scores(k, num_layers, num_kv)
-                n = act_n[ph][ver]
-                act_acc[ph][ver] = (act_acc[ph][ver]*n + a)/(n+1)
-                act_n[ph][ver] += 1
+    # ── optional PCA (disabled by default) ──
+    if not args.disable_pca and last_acts:
+        optional_pca_plot(last_acts, "head_output", num_layers,
+                          os.path.join(plots_dir, f"{prefix}_pca_head_output_{{layers}}.png"))
 
-            # PCA/t-SNE collection
-            if method == "text_mas" and ph == P:
-                for ver in VER_LABELS:
-                    k_agents = all_pf.get(ver)
-                    if not isinstance(k_agents, dict): continue
-                    for ag_role, ag_keys in k_agents.items():
-                        alpha = AGENT_ALPHA.get(ag_role, 0.5)
-                        col = VER_COLORS[ver]
-                        for l in range(num_layers):
-                            k=ag_keys.get(l)
-                            if k is None or k.size==0: continue
-                            seq=k.shape[1]
-                            flat=k.transpose(1,0,2).reshape(seq,-1)
-                            if flat.shape[0]>MAX_PCA_TOKENS:
-                                flat=flat[np.random.choice(flat.shape[0],MAX_PCA_TOKENS,replace=False)]
-                            pca_vecs[ph][l].append((flat, col, alpha, f"{ver}_{ag_role}"))
-            else:
-                for ver in VER_LABELS:
-                    k=fk(ver, ph)
-                    if k is None: continue
-                    col=VER_COLORS[ver]
-                    for l in range(num_layers):
-                        kl=k.get(l)
-                        if kl is None or kl.size==0: continue
-                        seq=kl.shape[1]
-                        flat=kl.transpose(1,0,2).reshape(seq,-1)
-                        if flat.shape[0]>MAX_PCA_TOKENS:
-                            flat=flat[np.random.choice(flat.shape[0],MAX_PCA_TOKENS,replace=False)]
-                        pca_vecs[ph][l].append((flat, col, 0.6, ver))
+    # ── metadata ──
+    meta = {
+        "model_name": args.model_name,
+        "task": args.task,
+        "method": "baseline",
+        "primary_analysis_method": args.primary_analysis_method,
+        "seed": args.seed,
+        "versions": VER_LABELS,
+        "num_layers": num_layers,
+        "num_attention_heads": n_q,
+        "num_key_value_heads": n_kv,
+        "head_dim": head_dim,
+        "analysis_phase": "prefill",
+        "removed_metrics": ["js_divergence", "tsne"],
+        "default_decode_analyzed": bool(args.analyze_decode),
+        "decode_mode": ("deterministic" if args.deterministic else "free_generation"),
+        "max_mmd_tokens": args.max_mmd_tokens,
+        "align_tokens_for_cka": bool(args.align_tokens_for_cka),
+        "num_tasks": len(items),
+        "metrics": {
+            "qkv": ["mean_pairwise_cosine", "maxmatch_cosine", "cka_linear", "mmd_rbf"],
+            "head_output": ["mean_pairwise_cosine", "maxmatch_cosine", "l2_mean",
+                            "mmd_rbf", "cka_linear"],
+            "residual_stream": ["mean_pairwise_cosine", "maxmatch_cosine",
+                                "cka_linear", "mmd_rbf"],
+        },
+        "note": {
+            "qkv": "Q/K/V metrics are measured before attention output (Q/K after RoPE, V raw).",
+            "head_output": "head_output metrics are measured after attention_probs @ V and before o_proj.",
+            "residual_stream": "residual_stream metrics are measured after each transformer block output (hidden_states[l+1]); index 0 is the embedding output.",
+            "mmd": "MMD is a distance: smaller means more similar.",
+            "js_removed": "JS divergence removed because Q/K/V/hidden vectors are not probability distributions.",
+            "tsne_removed": "t-SNE removed because it is visualization-only and unstable for quantitative interpretation.",
+            "gqa": "Q stored per query-head; K/V stored per kv-head; head_output stored per query-head.",
+        },
+    }
+    meta_path = os.path.join(plots_dir, f"{prefix}_run_metadata.json")
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    print(f"  metadata → {meta_path}")
 
-        del all_pf, all_dk; gc.collect(); torch.cuda.empty_cache()
 
-    # ── outputs per phase ──
-    for ph in [P, D]:
-        prefix = f"{method}_{args.task}_{model_tag}_{ph}"
+# =====================================================================
+# Kept (compatibility) extractors for text_mas / latent_mas
+# These remain importable/dispatchable but do NOT run the head-wise analysis.
+# =====================================================================
+@torch.no_grad()
+def extract_text_mas(wrapper, question, args, num_layers):  # pragma: no cover
+    raise NotImplementedError(
+        "text_mas head-wise analysis is intentionally not implemented in v4. "
+        "The pipeline effect mixes agent stages; use --primary_analysis_method baseline.")
 
-        # CSV
-        rows = csv_rows[ph]
-        if rows:
-            path = os.path.join(plots_dir, f"{prefix}_record.csv")
-            with open(path, "w", newline="", encoding="utf-8") as f:
-                w=csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-                w.writeheader(); w.writerows(rows)
-            print(f"  CSV → {path}  ({len(rows)} rows)")
 
-        # PCA / t-SNE
-        tpl = os.path.join(plots_dir, f"{prefix}_{{tag}}_{{layers}}.png")
-        dim_reduce_plots(pca_vecs[ph], num_layers, tpl, f"{method} {ph}")
+@torch.no_grad()
+def extract_latent_mas(wrapper, question, args, num_layers):  # pragma: no cover
+    raise NotImplementedError(
+        "latent_mas head-wise analysis is intentionally not implemented in v4. "
+        "Use --primary_analysis_method baseline for the head-wise sensitivity study.")
 
-        # Activation difference heatmap (2×3 grid: all pairwise diffs)
-        p = os.path.join(plots_dir, f"{prefix}_activation_diff.png")
-        plot_activation_diff_grid(act_acc[ph], p,
-                                   f"{method} {ph} — pairwise |Δ activation|",
-                                   num_layers, num_kv)
 
-    del csv_rows, pca_vecs, act_acc; gc.collect()
-
-    # ── diagnostic: mean cosine across versions for PCA overlap check ──
-    print(f"\n  Diagnostic — mean cosine similarity (prefill, orig↔ver1/2/3):")
-    # re-read CSV to compute
-    csv_p = os.path.join(plots_dir, f"{method}_{args.task}_{model_tag}_prefill_record.csv")
-    if os.path.exists(csv_p):
-        import pandas as pd
-        df = pd.read_csv(csv_p)
-        for v in ["version1","version2","version3"]:
-            col = f"{v}_cos"
-            if col in df.columns:
-                print(f"    {v}: {df[col].mean():.4f}  (min={df[col].min():.4f}  max={df[col].max():.4f})")
-        print("  → High cosine (>0.95 everywhere) = genuine overlap, not a bug.")
-        print("  → If decay in deeper layers, the model differentiates paraphrases there.\n")
+def analyze_method(wrapper, method, items, args, plots_dir, model_tag):
+    """Dispatch kept for compatibility. New head-wise analysis runs only for the
+    primary analysis method (baseline)."""
+    if method == args.primary_analysis_method == "baseline":
+        analyze_baseline_headwise(wrapper, items, args, plots_dir, model_tag)
+    else:
+        print(f"  [skip] method '{method}' is retained for dispatch but the head-wise "
+              f"prefill analysis only runs for primary_analysis_method="
+              f"'{args.primary_analysis_method}'.")
 
 
 # =====================================================================
@@ -654,30 +918,49 @@ def main():
     pa = argparse.ArgumentParser()
     pa.add_argument("--data_path", required=True)
     pa.add_argument("--task", default="gpqa",
-                    choices=["gsm8k","aime2024","aime2025","gpqa","arc_easy",
-                             "arc_challenge","mbppplus","humanevalplus","medqa"])
+                    choices=["gsm8k", "aime2024", "aime2025", "gpqa", "arc_easy",
+                             "arc_challenge", "mbppplus", "humanevalplus", "medqa"])
     pa.add_argument("--model_name", default="Qwen/Qwen3-8B")
     pa.add_argument("--device", default="cuda")
-    pa.add_argument("--methods", nargs="+", default=["baseline","text_mas","latent_mas"],
-                    choices=["baseline","text_mas","latent_mas"])
-    pa.add_argument("--prompt", choices=["sequential","hierarchical"], default="sequential")
+    pa.add_argument("--methods", nargs="+", default=["baseline"],
+                    choices=["baseline", "text_mas", "latent_mas"])
+    pa.add_argument("--prompt", choices=["sequential", "hierarchical"], default="sequential")
     pa.add_argument("--max_tasks", type=int, default=3)
     pa.add_argument("--latent_steps", type=int, default=10)
     pa.add_argument("--temperature", type=float, default=0.6)
     pa.add_argument("--top_p", type=float, default=0.95)
-    pa.add_argument("--max_new_tokens", type=int, default=4096,
-                    help="Full generation length (for correct inference)")
-    pa.add_argument("--gen_max_tokens", type=int, default=1024,
-                    help="Max tokens for text_mas intermediate agents")
-    pa.add_argument("--decode_analysis_steps", type=int, default=100,
-                    help="How many decoded tokens to record in CSV/plots")
+    pa.add_argument("--max_new_tokens", type=int, default=4096)
+    pa.add_argument("--decode_analysis_steps", type=int, default=64,
+                    help="Decode tokens to record when --analyze_decode is set")
     pa.add_argument("--text_mas_context_length", type=int, default=-1)
     pa.add_argument("--think", action="store_true")
     pa.add_argument("--latent_space_realign", action="store_true")
-    pa.add_argument("--plots_dir", default="./plots")
+    pa.add_argument("--plots_dir", default="./plots_headwise")
     pa.add_argument("--seed", type=int, default=42)
+
+    # ── new head-wise analysis options ──
+    pa.add_argument("--primary_analysis_method", default="baseline",
+                    choices=["baseline", "text_mas", "latent_mas"],
+                    help="Method on which the head-wise prefill analysis is run.")
+    pa.add_argument("--analyze_decode", action="store_true", default=False,
+                    help="Also run optional decode-stage K-cache cosine analysis.")
+    pa.add_argument("--save_raw_tensors", action="store_true", default=False,
+                    help="Save per-version Q/K/V/head_output/hidden as .npz (task 0).")
+    pa.add_argument("--max_mmd_tokens", type=int, default=256)
+    pa.add_argument("--align_tokens_for_cka", action="store_true", default=False,
+                    help="If set, resample to min(n_a,n_b) so CKA can be computed for "
+                         "mismatched token counts.")
+    pa.add_argument("--make_heatmaps", action="store_true", default=True)
+    pa.add_argument("--no_heatmaps", dest="make_heatmaps", action="store_false")
+    pa.add_argument("--disable_pca", action="store_true", default=True)
+    pa.add_argument("--enable_pca", dest="disable_pca", action="store_false")
+    pa.add_argument("--deterministic", action="store_true", default=False,
+                    help="Use do_sample=False (temperature ignored) for decode.")
+    pa.add_argument("--do_sample", dest="deterministic", action="store_false")
+
     args = pa.parse_args()
 
+    # fixed ModelWrapper expectations (HF backend, no vLLM for analysis)
     args.use_vllm = False
     args.use_second_HF_model = False
     args.enable_prefix_caching = False
@@ -685,23 +968,33 @@ def main():
     args.tensor_parallel_size = 1
     args.gpu_memory_utilization = 0.9
     args.method = "baseline"
+    if args.deterministic:
+        args.temperature = 0.0
 
-    np.random.seed(args.seed); torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
     os.makedirs(args.plots_dir, exist_ok=True)
 
     items = []
     with open(args.data_path, encoding="utf-8") as f:
         for line in f:
-            if line.strip(): items.append(json.loads(line))
-    if args.max_tasks > 0: items = items[:args.max_tasks]
+            if line.strip():
+                items.append(json.loads(line))
+    if args.max_tasks > 0:
+        items = items[:args.max_tasks]
     print(f"Loaded {len(items)} tasks from {args.data_path}")
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     wrapper = ModelWrapper(args.model_name, device, use_vllm=False, args=args)
     model_tag = args.model_name.split("/")[-1]
 
+    # NOTE: we deliberately keep the model's default attention implementation
+    # (sdpa). The submodule hooks (q/k/v/o_proj) and the o_proj pre-hook fire
+    # identically under sdpa/flash/eager, so forcing eager would only waste
+    # memory by materializing the full [n_q, seq, seq] score matrix.
+
     for method in args.methods:
-        print(f"\n{'='*60}\n  Method: {method}\n{'='*60}")
+        print(f"\n{'=' * 60}\n  Method: {method}\n{'=' * 60}")
         args.method = method
         analyze_method(wrapper, method, items, args, args.plots_dir, model_tag)
 
