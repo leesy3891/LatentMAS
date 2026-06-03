@@ -229,6 +229,46 @@ def lineplot_layerwise(df, metric_col, title, ylabel, out_path,
     print(f"  fig -> {os.path.basename(out_path)}")
 
 
+def qkv_layerwise_3panel(lw, metric_col, suptitle, ylabel, out_path,
+                         sharey=True, cka_valid_col=None, min_valid_rate=0.5):
+    """QKV layerwise plot split into 1x3 panels (one per component q/k/v),
+    each panel showing the 6 pair lines. Pair color is fixed across all figures.
+    Saved to the same filename as the previous single-axes version."""
+    comps = ["q", "k", "v"]
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=sharey)
+    legend_pairs = []
+    for ax, comp in zip(axes, comps):
+        sub_c = lw[lw["component"] == comp]
+        for pair in PAIR_ORDER:
+            sub = sub_c[sub_c["pair"] == pair]
+            if sub.empty:
+                continue
+            sub = sub.sort_values("layer")
+            alpha, ls = 0.9, "-"
+            if cka_valid_col is not None and cka_valid_col in sub.columns:
+                vr = sub[cka_valid_col].mean()
+                if pd.notna(vr) and vr < min_valid_rate:
+                    alpha, ls = 0.35, ":"   # unreliable CKA -> dotted, faded
+            ax.plot(sub["layer"], sub[metric_col], color=pair_color(pair),
+                    linestyle=ls, alpha=alpha, linewidth=1.8, marker="o", ms=2.5)
+            if pair not in legend_pairs:
+                legend_pairs.append(pair)
+        ax.set_title(f"component = {comp}", fontsize=10)
+        ax.set_xlabel("layer")
+        ax.grid(True, alpha=0.2)
+    axes[0].set_ylabel(ylabel)
+    handles = [Line2D([0], [0], color=pair_color(p), lw=2) for p in legend_pairs]
+    if handles:
+        fig.legend(handles, legend_pairs, title="pair", fontsize=8,
+                   loc="upper center", ncol=len(legend_pairs),
+                   bbox_to_anchor=(0.5, 1.06))
+    fig.suptitle(suptitle, fontsize=10, y=1.13)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  fig -> {os.path.basename(out_path)}")
+
+
 # =====================================================================
 # Ranking helper (no scores: pure per-metric sort)
 # =====================================================================
@@ -296,24 +336,22 @@ def analyze_qkv(df, out_dir, top_k, do_plots):
 
     if do_plots:
         fdir = os.path.join(out_dir, "figures")
-        lineplot_layerwise(lw, "maxmatch_cosine_mean",
-                           "QKV layerwise maxmatch_cosine (higher = more similar)",
-                           "maxmatch_cosine", os.path.join(fdir, "qkv_layerwise_maxmatch_cosine.png"),
-                           component_col="component")
-        lineplot_layerwise(lw, "mean_pairwise_cosine_mean",
-                           "QKV layerwise mean_pairwise_cosine (higher = more similar)",
-                           "mean_pairwise_cosine", os.path.join(fdir, "qkv_layerwise_mean_pairwise_cosine.png"),
-                           component_col="component")
-        lineplot_layerwise(lw, "mmd_rbf_mean",
-                           "QKV layerwise mmd_rbf (higher = more different) | "
-                           "MMD values are component-local; avoid cross-component absolute comparison",
-                           "mmd_rbf", os.path.join(fdir, "qkv_layerwise_mmd_rbf.png"),
-                           component_col="component")
-        lineplot_layerwise(lw, "cka_linear_mean_valid_only",
-                           "QKV layerwise CKA (valid only; higher = more structurally similar)",
-                           "cka_linear (valid only)",
-                           os.path.join(fdir, "qkv_layerwise_cka_valid_only.png"),
-                           component_col="component", cka_valid_col="cka_valid_rate")
+        qkv_layerwise_3panel(lw, "maxmatch_cosine_mean",
+                             "QKV layerwise maxmatch_cosine (higher = more similar)",
+                             "maxmatch_cosine", os.path.join(fdir, "qkv_layerwise_maxmatch_cosine.png"))
+        qkv_layerwise_3panel(lw, "mean_pairwise_cosine_mean",
+                             "QKV layerwise mean_pairwise_cosine (higher = more similar)",
+                             "mean_pairwise_cosine", os.path.join(fdir, "qkv_layerwise_mean_pairwise_cosine.png"))
+        qkv_layerwise_3panel(lw, "mmd_rbf_mean",
+                             "QKV layerwise mmd_rbf (higher = more different) | "
+                             "MMD values are component-local; avoid cross-component absolute comparison",
+                             "mmd_rbf", os.path.join(fdir, "qkv_layerwise_mmd_rbf.png"),
+                             sharey=False)
+        qkv_layerwise_3panel(lw, "cka_linear_mean_valid_only",
+                             "QKV layerwise CKA (valid only; higher = more structurally similar)",
+                             "cka_linear (valid only)",
+                             os.path.join(fdir, "qkv_layerwise_cka_valid_only.png"),
+                             cka_valid_col="cka_valid_rate")
     return df
 
 
