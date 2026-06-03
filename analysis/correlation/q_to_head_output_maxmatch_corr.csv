@@ -1,0 +1,7 @@
+pair,component,metric,pearson,spearman,n,note
+original_vs_version1,q,maxmatch_cosine,0.23513,0.170379,1600,q->head_output same-metric corr; head aligned
+original_vs_version2,q,maxmatch_cosine,0.129982,0.134579,1600,q->head_output same-metric corr; head aligned
+original_vs_version3,q,maxmatch_cosine,0.130414,0.122674,1600,q->head_output same-metric corr; head aligned
+version1_vs_version2,q,maxmatch_cosine,0.218251,0.161564,1600,q->head_output same-metric corr; head aligned
+version1_vs_version3,q,maxmatch_cosine,0.179964,0.130007,1600,q->head_output same-metric corr; head aligned
+version2_vs_version3,q,maxmatch_cosine,0.148423,0.156591,1600,q->head_output same-metric corr; head aligned

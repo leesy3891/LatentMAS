@@ -1,0 +1,7 @@
+pair,component,metric,pearson,spearman,n,note
+original_vs_version1,head_output->residual,mmd_rbf,0.423816,0.744841,40,head_output layer l (head-mean) vs residual layer l+1
+original_vs_version2,head_output->residual,mmd_rbf,0.303972,0.536398,40,head_output layer l (head-mean) vs residual layer l+1
+original_vs_version3,head_output->residual,mmd_rbf,0.078762,0.187054,40,head_output layer l (head-mean) vs residual layer l+1
+version1_vs_version2,head_output->residual,mmd_rbf,0.422925,0.739587,40,head_output layer l (head-mean) vs residual layer l+1
+version1_vs_version3,head_output->residual,mmd_rbf,0.411598,0.70394,40,head_output layer l (head-mean) vs residual layer l+1
+version2_vs_version3,head_output->residual,mmd_rbf,-0.022131,0.222514,40,head_output layer l (head-mean) vs residual layer l+1

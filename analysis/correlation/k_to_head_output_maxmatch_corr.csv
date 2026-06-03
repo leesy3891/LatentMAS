@@ -1,0 +1,7 @@
+pair,component,metric,pearson,spearman,n,note
+original_vs_version1,k,maxmatch_cosine,0.183313,0.222113,1600,k->head_output same-metric corr; GQA kv->q mapped
+original_vs_version2,k,maxmatch_cosine,0.16346,0.181315,1600,k->head_output same-metric corr; GQA kv->q mapped
+original_vs_version3,k,maxmatch_cosine,0.200785,0.218818,1600,k->head_output same-metric corr; GQA kv->q mapped
+version1_vs_version2,k,maxmatch_cosine,0.181029,0.215341,1600,k->head_output same-metric corr; GQA kv->q mapped
+version1_vs_version3,k,maxmatch_cosine,0.167464,0.20279,1600,k->head_output same-metric corr; GQA kv->q mapped
+version2_vs_version3,k,maxmatch_cosine,0.203501,0.216765,1600,k->head_output same-metric corr; GQA kv->q mapped

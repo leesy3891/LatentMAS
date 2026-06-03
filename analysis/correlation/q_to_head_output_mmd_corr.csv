@@ -1,0 +1,7 @@
+pair,component,metric,pearson,spearman,n,note
+original_vs_version1,q,mmd_rbf,0.594422,0.637572,1600,q->head_output same-metric corr; head aligned
+original_vs_version2,q,mmd_rbf,0.312753,0.386797,1600,q->head_output same-metric corr; head aligned
+original_vs_version3,q,mmd_rbf,0.21526,0.364476,1600,q->head_output same-metric corr; head aligned
+version1_vs_version2,q,mmd_rbf,0.581352,0.620483,1600,q->head_output same-metric corr; head aligned
+version1_vs_version3,q,mmd_rbf,0.565838,0.587221,1600,q->head_output same-metric corr; head aligned
+version2_vs_version3,q,mmd_rbf,0.022228,0.221924,1600,q->head_output same-metric corr; head aligned

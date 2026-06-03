@@ -1,0 +1,157 @@
+pair,source_file_or_stage,component,metric,mean,std,median,min,max,n_rows,note
+original_vs_version1,qkv,k,mean_pairwise_cosine,0.524287,0.173495,0.504459,0.129945,0.98861,16000,cosine: higher means more similar
+original_vs_version1,qkv,k,maxmatch_cosine,0.910188,0.04257,0.916641,0.701289,0.998502,16000,cosine: higher means more similar
+original_vs_version1,qkv,k,mmd_rbf,0.00506,0.003538,0.004265,0.00087,0.060017,16000,mmd_rbf: lower means more similar
+original_vs_version1,qkv,k,cka_linear_valid_only,0.677796,0.206846,0.743556,0.009134,0.990746,960,cka: higher means more structurally similar; valid only
+original_vs_version1,qkv,k,cka_valid_rate,0.06,,,,,16000,fraction of rows with a valid CKA comparison
+original_vs_version1,qkv,q,mean_pairwise_cosine,0.543347,0.115706,0.532847,0.161327,0.915519,80000,cosine: higher means more similar
+original_vs_version1,qkv,q,maxmatch_cosine,0.887304,0.043111,0.893568,0.656444,0.99107,80000,cosine: higher means more similar
+original_vs_version1,qkv,q,mmd_rbf,0.006719,0.005868,0.00535,0.000358,0.155489,80000,mmd_rbf: lower means more similar
+original_vs_version1,qkv,q,cka_linear_valid_only,0.696591,0.182196,0.753162,0.152848,0.99067,4800,cka: higher means more structurally similar; valid only
+original_vs_version1,qkv,q,cka_valid_rate,0.06,,,,,80000,fraction of rows with a valid CKA comparison
+original_vs_version1,qkv,v,mean_pairwise_cosine,0.093433,0.064734,0.078761,0.007131,0.523388,16000,cosine: higher means more similar
+original_vs_version1,qkv,v,maxmatch_cosine,0.841625,0.055941,0.849117,0.613955,0.965134,16000,cosine: higher means more similar
+original_vs_version1,qkv,v,mmd_rbf,0.005668,0.006615,0.004108,0.00092,0.171254,16000,mmd_rbf: lower means more similar
+original_vs_version1,qkv,v,cka_linear_valid_only,0.441768,0.21731,0.46523,0.014651,0.9091,960,cka: higher means more structurally similar; valid only
+original_vs_version1,qkv,v,cka_valid_rate,0.06,,,,,16000,fraction of rows with a valid CKA comparison
+original_vs_version2,qkv,k,mean_pairwise_cosine,0.527301,0.172764,0.507944,0.129751,0.988716,16000,cosine: higher means more similar
+original_vs_version2,qkv,k,maxmatch_cosine,0.94357,0.036912,0.952642,0.739888,0.99944,16000,cosine: higher means more similar
+original_vs_version2,qkv,k,mmd_rbf,0.002238,0.001601,0.001737,0.000101,0.01884,16000,mmd_rbf: lower means more similar
+original_vs_version2,qkv,k,cka_linear_valid_only,0.879267,0.095122,0.905196,0.306505,0.998417,1600,cka: higher means more structurally similar; valid only
+original_vs_version2,qkv,k,cka_valid_rate,0.1,,,,,16000,fraction of rows with a valid CKA comparison
+original_vs_version2,qkv,q,mean_pairwise_cosine,0.546577,0.115366,0.536944,0.162538,0.915468,80000,cosine: higher means more similar
+original_vs_version2,qkv,q,maxmatch_cosine,0.929752,0.042005,0.940734,0.700993,0.996925,80000,cosine: higher means more similar
+original_vs_version2,qkv,q,mmd_rbf,0.002833,0.001976,0.002216,8.7e-05,0.051383,80000,mmd_rbf: lower means more similar
+original_vs_version2,qkv,q,cka_linear_valid_only,0.88475,0.066705,0.897754,0.397037,0.997003,8000,cka: higher means more structurally similar; valid only
+original_vs_version2,qkv,q,cka_valid_rate,0.1,,,,,80000,fraction of rows with a valid CKA comparison
+original_vs_version2,qkv,v,mean_pairwise_cosine,0.098406,0.067147,0.082904,0.009359,0.553594,16000,cosine: higher means more similar
+original_vs_version2,qkv,v,maxmatch_cosine,0.92769,0.028425,0.931739,0.769536,0.989069,16000,cosine: higher means more similar
+original_vs_version2,qkv,v,mmd_rbf,0.002018,0.001617,0.0016,0.000152,0.055527,16000,mmd_rbf: lower means more similar
+original_vs_version2,qkv,v,cka_linear_valid_only,0.744277,0.134173,0.764354,0.030026,0.953716,1600,cka: higher means more structurally similar; valid only
+original_vs_version2,qkv,v,cka_valid_rate,0.1,,,,,16000,fraction of rows with a valid CKA comparison
+original_vs_version3,qkv,k,mean_pairwise_cosine,0.527223,0.172534,0.507587,0.129595,0.988837,16000,cosine: higher means more similar
+original_vs_version3,qkv,k,maxmatch_cosine,0.919684,0.04139,0.927265,0.715727,0.998786,16000,cosine: higher means more similar
+original_vs_version3,qkv,k,mmd_rbf,0.003264,0.001672,0.00282,0.000388,0.018673,16000,mmd_rbf: lower means more similar
+original_vs_version3,qkv,k,cka_linear_valid_only,0.666604,0.127164,0.692037,0.132208,0.991133,320,cka: higher means more structurally similar; valid only
+original_vs_version3,qkv,k,cka_valid_rate,0.02,,,,,16000,fraction of rows with a valid CKA comparison
+original_vs_version3,qkv,q,mean_pairwise_cosine,0.545771,0.115283,0.53604,0.163287,0.915425,80000,cosine: higher means more similar
+original_vs_version3,qkv,q,maxmatch_cosine,0.898716,0.044407,0.906976,0.682686,0.990108,80000,cosine: higher means more similar
+original_vs_version3,qkv,q,mmd_rbf,0.004143,0.002069,0.003617,0.000325,0.052836,80000,mmd_rbf: lower means more similar
+original_vs_version3,qkv,q,cka_linear_valid_only,0.689378,0.102928,0.697868,0.281754,0.981867,1600,cka: higher means more structurally similar; valid only
+original_vs_version3,qkv,q,cka_valid_rate,0.02,,,,,80000,fraction of rows with a valid CKA comparison
+original_vs_version3,qkv,v,mean_pairwise_cosine,0.097007,0.066917,0.081392,0.009211,0.554206,16000,cosine: higher means more similar
+original_vs_version3,qkv,v,maxmatch_cosine,0.892078,0.039827,0.896558,0.669472,0.990816,16000,cosine: higher means more similar
+original_vs_version3,qkv,v,mmd_rbf,0.002895,0.002042,0.002454,0.000227,0.056068,16000,mmd_rbf: lower means more similar
+original_vs_version3,qkv,v,cka_linear_valid_only,0.418374,0.093679,0.414029,0.192974,0.668477,320,cka: higher means more structurally similar; valid only
+original_vs_version3,qkv,v,cka_valid_rate,0.02,,,,,16000,fraction of rows with a valid CKA comparison
+version1_vs_version2,qkv,k,mean_pairwise_cosine,0.524254,0.173456,0.504448,0.133126,0.988429,16000,cosine: higher means more similar
+version1_vs_version2,qkv,k,maxmatch_cosine,0.910199,0.041594,0.916284,0.702683,0.997854,16000,cosine: higher means more similar
+version1_vs_version2,qkv,k,mmd_rbf,0.004927,0.00337,0.004185,0.000867,0.055497,16000,mmd_rbf: lower means more similar
+version1_vs_version2,qkv,k,cka_linear_valid_only,0.825456,0.095066,0.851986,0.373404,0.992683,320,cka: higher means more structurally similar; valid only
+version1_vs_version2,qkv,k,cka_valid_rate,0.02,,,,,16000,fraction of rows with a valid CKA comparison
+version1_vs_version2,qkv,q,mean_pairwise_cosine,0.543689,0.11557,0.533052,0.161896,0.915313,80000,cosine: higher means more similar
+version1_vs_version2,qkv,q,maxmatch_cosine,0.887688,0.041746,0.89348,0.664698,0.989147,80000,cosine: higher means more similar
+version1_vs_version2,qkv,q,mmd_rbf,0.006571,0.005731,0.005269,0.000409,0.155743,80000,mmd_rbf: lower means more similar
+version1_vs_version2,qkv,q,cka_linear_valid_only,0.837653,0.066068,0.847828,0.370708,0.989236,1600,cka: higher means more structurally similar; valid only
+version1_vs_version2,qkv,q,cka_valid_rate,0.02,,,,,80000,fraction of rows with a valid CKA comparison
+version1_vs_version2,qkv,v,mean_pairwise_cosine,0.093434,0.064665,0.078914,0.007349,0.525128,16000,cosine: higher means more similar
+version1_vs_version2,qkv,v,maxmatch_cosine,0.843239,0.057185,0.849484,0.60619,0.988767,16000,cosine: higher means more similar
+version1_vs_version2,qkv,v,mmd_rbf,0.005543,0.00639,0.004048,0.000764,0.170073,16000,mmd_rbf: lower means more similar
+version1_vs_version2,qkv,v,cka_linear_valid_only,0.636514,0.113881,0.650381,0.160268,0.870737,320,cka: higher means more structurally similar; valid only
+version1_vs_version2,qkv,v,cka_valid_rate,0.02,,,,,16000,fraction of rows with a valid CKA comparison
+version1_vs_version3,qkv,k,mean_pairwise_cosine,0.524153,0.173443,0.504318,0.133164,0.988565,16000,cosine: higher means more similar
+version1_vs_version3,qkv,k,maxmatch_cosine,0.9036,0.04514,0.909054,0.695692,0.998941,16000,cosine: higher means more similar
+version1_vs_version3,qkv,k,mmd_rbf,0.005483,0.003472,0.004707,0.001177,0.054742,16000,mmd_rbf: lower means more similar
+version1_vs_version3,qkv,k,cka_linear_valid_only,0.718324,0.125996,0.746406,0.090232,0.98662,320,cka: higher means more structurally similar; valid only
+version1_vs_version3,qkv,k,cka_valid_rate,0.02,,,,,16000,fraction of rows with a valid CKA comparison
+version1_vs_version3,qkv,q,mean_pairwise_cosine,0.543713,0.115519,0.533,0.162634,0.915731,80000,cosine: higher means more similar
+version1_vs_version3,qkv,q,maxmatch_cosine,0.879289,0.04549,0.883326,0.680893,0.995714,80000,cosine: higher means more similar
+version1_vs_version3,qkv,q,mmd_rbf,0.007245,0.005835,0.005955,0.000451,0.144405,80000,mmd_rbf: lower means more similar
+version1_vs_version3,qkv,q,cka_linear_valid_only,0.730072,0.103274,0.74608,0.193595,0.986483,1600,cka: higher means more structurally similar; valid only
+version1_vs_version3,qkv,q,cka_valid_rate,0.02,,,,,80000,fraction of rows with a valid CKA comparison
+version1_vs_version3,qkv,v,mean_pairwise_cosine,0.09307,0.06458,0.078655,0.007869,0.526035,16000,cosine: higher means more similar
+version1_vs_version3,qkv,v,maxmatch_cosine,0.830406,0.059862,0.834763,0.584776,0.987861,16000,cosine: higher means more similar
+version1_vs_version3,qkv,v,mmd_rbf,0.005989,0.006574,0.004492,0.000901,0.173224,16000,mmd_rbf: lower means more similar
+version1_vs_version3,qkv,v,cka_linear_valid_only,0.517517,0.123128,0.52614,0.047001,0.797077,320,cka: higher means more structurally similar; valid only
+version1_vs_version3,qkv,v,cka_valid_rate,0.02,,,,,16000,fraction of rows with a valid CKA comparison
+version2_vs_version3,qkv,k,mean_pairwise_cosine,0.527398,0.17243,0.508047,0.13289,0.988656,16000,cosine: higher means more similar
+version2_vs_version3,qkv,k,maxmatch_cosine,0.93014,0.038953,0.937104,0.742334,0.999142,16000,cosine: higher means more similar
+version2_vs_version3,qkv,k,mmd_rbf,0.002583,0.001271,0.002304,0.000239,0.012154,16000,mmd_rbf: lower means more similar
+version2_vs_version3,qkv,k,cka_linear_valid_only,0.805851,0.11175,0.830959,0.224788,0.993367,960,cka: higher means more structurally similar; valid only
+version2_vs_version3,qkv,k,cka_valid_rate,0.06,,,,,16000,fraction of rows with a valid CKA comparison
+version2_vs_version3,qkv,q,mean_pairwise_cosine,0.546431,0.115118,0.536806,0.163818,0.915883,80000,cosine: higher means more similar
+version2_vs_version3,qkv,q,maxmatch_cosine,0.912022,0.042956,0.920195,0.692175,0.993705,80000,cosine: higher means more similar
+version2_vs_version3,qkv,q,mmd_rbf,0.00321,0.001453,0.002913,0.000159,0.015024,80000,mmd_rbf: lower means more similar
+version2_vs_version3,qkv,q,cka_linear_valid_only,0.823274,0.083345,0.836452,0.299745,0.992581,4800,cka: higher means more structurally similar; valid only
+version2_vs_version3,qkv,q,cka_valid_rate,0.06,,,,,80000,fraction of rows with a valid CKA comparison
+version2_vs_version3,qkv,v,mean_pairwise_cosine,0.09749,0.066978,0.081994,0.010082,0.556176,16000,cosine: higher means more similar
+version2_vs_version3,qkv,v,maxmatch_cosine,0.908771,0.03612,0.912522,0.682148,0.989975,16000,cosine: higher means more similar
+version2_vs_version3,qkv,v,mmd_rbf,0.002243,0.001161,0.002039,0.000172,0.019733,16000,mmd_rbf: lower means more similar
+version2_vs_version3,qkv,v,cka_linear_valid_only,0.636375,0.133903,0.64598,0.093707,0.964799,960,cka: higher means more structurally similar; valid only
+version2_vs_version3,qkv,v,cka_valid_rate,0.06,,,,,16000,fraction of rows with a valid CKA comparison
+original_vs_version1,head_output,head_output,mean_pairwise_cosine,0.323093,0.175316,0.282181,0.016963,0.999993,80000,cosine: higher means more similar
+original_vs_version1,head_output,head_output,maxmatch_cosine,0.892597,0.063855,0.907826,0.393644,1.0,80000,cosine: higher means more similar
+original_vs_version1,head_output,head_output,mmd_rbf,0.026933,0.044837,0.012671,0.000742,0.84961,80000,mmd_rbf: lower means more similar
+original_vs_version1,head_output,head_output,l2_mean,3.956173,5.38043,2.460966,0.000793,65.44741,80000,l2_mean: lower means more similar; same-layer comparison preferred
+original_vs_version1,head_output,head_output,cka_linear_valid_only,0.484998,0.265311,0.494172,0.005872,0.996561,4800,cka: higher means more structurally similar; valid only
+original_vs_version1,head_output,head_output,cka_valid_rate,0.06,,,,,80000,fraction of rows with a valid CKA comparison
+original_vs_version2,head_output,head_output,mean_pairwise_cosine,0.341646,0.179388,0.29934,0.027411,0.999992,80000,cosine: higher means more similar
+original_vs_version2,head_output,head_output,maxmatch_cosine,0.949281,0.030965,0.955648,0.599199,1.0,80000,cosine: higher means more similar
+original_vs_version2,head_output,head_output,mmd_rbf,0.01001,0.018202,0.005303,0.000199,0.856381,80000,mmd_rbf: lower means more similar
+original_vs_version2,head_output,head_output,l2_mean,3.896522,5.290136,2.433407,0.000811,68.147998,80000,l2_mean: lower means more similar; same-layer comparison preferred
+original_vs_version2,head_output,head_output,cka_linear_valid_only,0.783001,0.171751,0.828514,0.004549,0.999282,8000,cka: higher means more structurally similar; valid only
+original_vs_version2,head_output,head_output,cka_valid_rate,0.1,,,,,80000,fraction of rows with a valid CKA comparison
+original_vs_version3,head_output,head_output,mean_pairwise_cosine,0.336935,0.179397,0.29412,0.027152,0.999993,80000,cosine: higher means more similar
+original_vs_version3,head_output,head_output,maxmatch_cosine,0.924938,0.041218,0.93174,0.596584,1.0,80000,cosine: higher means more similar
+original_vs_version3,head_output,head_output,mmd_rbf,0.015237,0.025019,0.008639,0.000162,0.84796,80000,mmd_rbf: lower means more similar
+original_vs_version3,head_output,head_output,l2_mean,3.885641,5.270591,2.429332,0.000804,67.768659,80000,l2_mean: lower means more similar; same-layer comparison preferred
+original_vs_version3,head_output,head_output,cka_linear_valid_only,0.456843,0.193421,0.452726,0.004661,0.980523,1600,cka: higher means more structurally similar; valid only
+original_vs_version3,head_output,head_output,cka_valid_rate,0.02,,,,,80000,fraction of rows with a valid CKA comparison
+version1_vs_version2,head_output,head_output,mean_pairwise_cosine,0.323645,0.17577,0.282138,0.017518,0.999993,80000,cosine: higher means more similar
+version1_vs_version2,head_output,head_output,maxmatch_cosine,0.89397,0.063279,0.908146,0.40761,1.0,80000,cosine: higher means more similar
+version1_vs_version2,head_output,head_output,mmd_rbf,0.026317,0.043595,0.012712,0.000477,0.906165,80000,mmd_rbf: lower means more similar
+version1_vs_version2,head_output,head_output,l2_mean,3.940753,5.348797,2.453612,0.000811,65.417189,80000,l2_mean: lower means more similar; same-layer comparison preferred
+version1_vs_version2,head_output,head_output,cka_linear_valid_only,0.704235,0.183763,0.741554,0.044551,0.998245,1600,cka: higher means more structurally similar; valid only
+version1_vs_version2,head_output,head_output,cka_valid_rate,0.02,,,,,80000,fraction of rows with a valid CKA comparison
+version1_vs_version3,head_output,head_output,mean_pairwise_cosine,0.321826,0.175869,0.280178,0.017073,0.999993,80000,cosine: higher means more similar
+version1_vs_version3,head_output,head_output,maxmatch_cosine,0.885013,0.065568,0.898311,0.390912,1.0,80000,cosine: higher means more similar
+version1_vs_version3,head_output,head_output,mmd_rbf,0.028448,0.044698,0.014562,0.000648,0.9598,80000,mmd_rbf: lower means more similar
+version1_vs_version3,head_output,head_output,l2_mean,3.937548,5.343581,2.453583,0.000807,65.725386,80000,l2_mean: lower means more similar; same-layer comparison preferred
+version1_vs_version3,head_output,head_output,cka_linear_valid_only,0.532096,0.226815,0.549591,0.006359,0.997273,1600,cka: higher means more structurally similar; valid only
+version1_vs_version3,head_output,head_output,cka_valid_rate,0.02,,,,,80000,fraction of rows with a valid CKA comparison
+version2_vs_version3,head_output,head_output,mean_pairwise_cosine,0.339795,0.180084,0.296546,0.028879,0.999993,80000,cosine: higher means more similar
+version2_vs_version3,head_output,head_output,maxmatch_cosine,0.936515,0.036093,0.942435,0.641709,1.0,80000,cosine: higher means more similar
+version2_vs_version3,head_output,head_output,mmd_rbf,0.011865,0.020465,0.007036,0.000235,0.828984,80000,mmd_rbf: lower means more similar
+version2_vs_version3,head_output,head_output,l2_mean,3.864741,5.234351,2.415954,0.000821,67.720236,80000,l2_mean: lower means more similar; same-layer comparison preferred
+version2_vs_version3,head_output,head_output,cka_linear_valid_only,0.701965,0.189761,0.736468,0.014198,0.999404,4800,cka: higher means more structurally similar; valid only
+version2_vs_version3,head_output,head_output,cka_valid_rate,0.06,,,,,80000,fraction of rows with a valid CKA comparison
+original_vs_version1,residual,residual,mean_pairwise_cosine,0.487384,0.098858,0.492246,0.038786,0.71571,2050,cosine: higher means more similar
+original_vs_version1,residual,residual,maxmatch_cosine,0.897069,0.046872,0.904576,0.511901,0.972267,2050,cosine: higher means more similar
+original_vs_version1,residual,residual,mmd_rbf,0.0143,0.032618,0.007876,0.001882,0.390049,2050,mmd_rbf: lower means more similar
+original_vs_version1,residual,residual,cka_linear_valid_only,0.702401,0.262794,0.694918,0.108889,0.999939,123,cka: higher means more structurally similar; valid only
+original_vs_version1,residual,residual,cka_valid_rate,0.06,,,,,2050,fraction of rows with a valid CKA comparison
+original_vs_version2,residual,residual,mean_pairwise_cosine,0.506437,0.091396,0.503803,0.083776,0.748927,2050,cosine: higher means more similar
+original_vs_version2,residual,residual,maxmatch_cosine,0.958898,0.016829,0.961762,0.734878,0.988093,2050,cosine: higher means more similar
+original_vs_version2,residual,residual,mmd_rbf,0.00254,0.003161,0.002062,0.000289,0.127477,2050,mmd_rbf: lower means more similar
+original_vs_version2,residual,residual,cka_linear_valid_only,0.893354,0.127679,0.937174,0.443859,0.999986,205,cka: higher means more structurally similar; valid only
+original_vs_version2,residual,residual,cka_valid_rate,0.1,,,,,2050,fraction of rows with a valid CKA comparison
+original_vs_version3,residual,residual,mean_pairwise_cosine,0.50575,0.091029,0.503391,0.085938,0.750683,2050,cosine: higher means more similar
+original_vs_version3,residual,residual,maxmatch_cosine,0.939403,0.02218,0.941563,0.73752,0.9896,2050,cosine: higher means more similar
+original_vs_version3,residual,residual,mmd_rbf,0.003653,0.00357,0.003161,0.000601,0.145006,2050,mmd_rbf: lower means more similar
+original_vs_version3,residual,residual,cka_linear_valid_only,0.699586,0.273041,0.643061,0.217282,0.999858,41,cka: higher means more structurally similar; valid only
+original_vs_version3,residual,residual,cka_valid_rate,0.02,,,,,2050,fraction of rows with a valid CKA comparison
+version1_vs_version2,residual,residual,mean_pairwise_cosine,0.488054,0.098733,0.492133,0.036077,0.714682,2050,cosine: higher means more similar
+version1_vs_version2,residual,residual,maxmatch_cosine,0.897864,0.046624,0.903938,0.503642,0.983506,2050,cosine: higher means more similar
+version1_vs_version2,residual,residual,mmd_rbf,0.013954,0.031956,0.007774,0.001395,0.39324,2050,mmd_rbf: lower means more similar
+version1_vs_version2,residual,residual,cka_linear_valid_only,0.832502,0.179016,0.84015,0.334648,0.999864,41,cka: higher means more structurally similar; valid only
+version1_vs_version2,residual,residual,cka_valid_rate,0.02,,,,,2050,fraction of rows with a valid CKA comparison
+version1_vs_version3,residual,residual,mean_pairwise_cosine,0.488163,0.098642,0.492513,0.034613,0.721467,2050,cosine: higher means more similar
+version1_vs_version3,residual,residual,maxmatch_cosine,0.891068,0.047088,0.895568,0.502618,0.98293,2050,cosine: higher means more similar
+version1_vs_version3,residual,residual,mmd_rbf,0.014569,0.032174,0.008311,0.001541,0.380128,2050,mmd_rbf: lower means more similar
+version1_vs_version3,residual,residual,cka_linear_valid_only,0.744258,0.238468,0.709151,0.347445,0.999885,41,cka: higher means more structurally similar; valid only
+version1_vs_version3,residual,residual,cka_valid_rate,0.02,,,,,2050,fraction of rows with a valid CKA comparison
+version2_vs_version3,residual,residual,mean_pairwise_cosine,0.506764,0.090988,0.504842,0.083711,0.752199,2050,cosine: higher means more similar
+version2_vs_version3,residual,residual,maxmatch_cosine,0.948849,0.018864,0.950707,0.799361,0.99148,2050,cosine: higher means more similar
+version2_vs_version3,residual,residual,mmd_rbf,0.0026,0.000972,0.002481,0.000308,0.006727,2050,mmd_rbf: lower means more similar
+version2_vs_version3,residual,residual,cka_linear_valid_only,0.82888,0.176591,0.839314,0.314908,0.999911,123,cka: higher means more structurally similar; valid only
+version2_vs_version3,residual,residual,cka_valid_rate,0.06,,,,,2050,fraction of rows with a valid CKA comparison

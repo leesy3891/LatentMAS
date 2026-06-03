@@ -1,0 +1,7 @@
+pair,component,metric,pearson,spearman,n,note
+original_vs_version1,k,mmd_rbf,0.489712,0.582311,1600,k->head_output same-metric corr; GQA kv->q mapped
+original_vs_version2,k,mmd_rbf,0.249338,0.300194,1600,k->head_output same-metric corr; GQA kv->q mapped
+original_vs_version3,k,mmd_rbf,0.130858,0.205119,1600,k->head_output same-metric corr; GQA kv->q mapped
+version1_vs_version2,k,mmd_rbf,0.478036,0.552474,1600,k->head_output same-metric corr; GQA kv->q mapped
+version1_vs_version3,k,mmd_rbf,0.455747,0.489345,1600,k->head_output same-metric corr; GQA kv->q mapped
+version2_vs_version3,k,mmd_rbf,-0.047011,0.048392,1600,k->head_output same-metric corr; GQA kv->q mapped

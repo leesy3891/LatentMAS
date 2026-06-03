@@ -1,0 +1,7 @@
+pair,component,metric,pearson,spearman,n,note
+original_vs_version1,head_output->residual,maxmatch_cosine,0.379951,0.702064,40,head_output layer l (head-mean) vs residual layer l+1
+original_vs_version2,head_output->residual,maxmatch_cosine,-0.27609,-0.318574,40,head_output layer l (head-mean) vs residual layer l+1
+original_vs_version3,head_output->residual,maxmatch_cosine,-0.319586,-0.353471,40,head_output layer l (head-mean) vs residual layer l+1
+version1_vs_version2,head_output->residual,maxmatch_cosine,0.372953,0.670732,40,head_output layer l (head-mean) vs residual layer l+1
+version1_vs_version3,head_output->residual,maxmatch_cosine,0.276904,0.445966,40,head_output layer l (head-mean) vs residual layer l+1
+version2_vs_version3,head_output->residual,maxmatch_cosine,-0.146235,-0.158537,40,head_output layer l (head-mean) vs residual layer l+1
