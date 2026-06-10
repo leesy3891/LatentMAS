@@ -1,0 +1,7 @@
+pair,component,metric,pair_category,pearson,spearman,n,note
+gpqa_orgn_vs_gpqa_ver1,head_output->residual,mmd_rbf,same_semantic_diff_surface,0.448465,0.833021,40,head_output layer l (head-mean) vs residual layer l+1
+gsm8k_orgn_vs_gpqa_orgn,head_output->residual,mmd_rbf,diff_semantic,0.439296,0.321013,40,head_output layer l (head-mean) vs residual layer l+1
+gsm8k_orgn_vs_gpqa_ver1,head_output->residual,mmd_rbf,diff_semantic,0.431193,0.042777,40,head_output layer l (head-mean) vs residual layer l+1
+gsm8k_orgn_vs_gsm8k_ver1,head_output->residual,mmd_rbf,same_semantic_diff_surface,0.593822,0.848405,40,head_output layer l (head-mean) vs residual layer l+1
+gsm8k_ver1_vs_gpqa_orgn,head_output->residual,mmd_rbf,diff_semantic,0.566679,0.471857,40,head_output layer l (head-mean) vs residual layer l+1
+gsm8k_ver1_vs_gpqa_ver1,head_output->residual,mmd_rbf,diff_semantic,0.393702,0.244841,40,head_output layer l (head-mean) vs residual layer l+1

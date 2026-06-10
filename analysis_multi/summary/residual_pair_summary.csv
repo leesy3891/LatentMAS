@@ -1,0 +1,7 @@
+pair,n_rows,n_layers,mean_pairwise_cosine_mean,mean_pairwise_cosine_std,mean_pairwise_cosine_median,maxmatch_cosine_mean,maxmatch_cosine_std,maxmatch_cosine_median,mmd_rbf_mean,mmd_rbf_std,mmd_rbf_median,pair_category,language_pair,same_task,same_version
+gpqa_orgn_vs_gpqa_ver1,41,41,0.467977,0.102309,0.47771,0.689743,0.053924,0.684726,0.023064,0.057973,0.011977,same_semantic_diff_surface,cross_lang,True,False
+gsm8k_orgn_vs_gpqa_orgn,41,41,0.472009,0.097569,0.473907,0.640068,0.073311,0.623079,0.038076,0.010777,0.039238,diff_semantic,same_lang,False,True
+gsm8k_orgn_vs_gpqa_ver1,41,41,0.445648,0.109369,0.461323,0.608272,0.074801,0.604625,0.056974,0.075952,0.046943,diff_semantic,cross_lang,False,False
+gsm8k_orgn_vs_gsm8k_ver1,41,41,0.447279,0.120494,0.467938,0.653412,0.084878,0.671637,0.044544,0.095924,0.026434,same_semantic_diff_surface,cross_lang,True,False
+gsm8k_ver1_vs_gpqa_orgn,41,41,0.428858,0.111666,0.441581,0.59522,0.078629,0.597408,0.06647,0.073595,0.053527,diff_semantic,cross_lang,False,False
+gsm8k_ver1_vs_gpqa_ver1,41,41,0.438499,0.088758,0.439704,0.615841,0.069323,0.614866,0.039862,0.00836,0.041286,diff_semantic,same_lang,False,True

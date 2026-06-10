@@ -1,0 +1,97 @@
+pair,pair_category,source_file_or_stage,component,metric,mean,std,median,min,max,n_rows,note
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,qkv,k,mean_pairwise_cosine,0.541434,0.165748,0.512723,0.152674,0.987746,320,cosine: higher means more similar
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,qkv,k,maxmatch_cosine,0.796902,0.07742,0.787195,0.551847,0.995401,320,cosine: higher means more similar
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,qkv,k,mmd_rbf,0.007595,0.004997,0.006276,0.0042,0.050531,320,mmd_rbf: lower means more similar; component-local scale
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,qkv,q,mean_pairwise_cosine,0.540882,0.116716,0.530648,0.205673,0.915672,1600,cosine: higher means more similar
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,qkv,q,maxmatch_cosine,0.779186,0.062483,0.774144,0.622168,0.966846,1600,cosine: higher means more similar
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,qkv,q,mmd_rbf,0.008931,0.008492,0.006594,0.003625,0.13081,1600,mmd_rbf: lower means more similar; component-local scale
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,qkv,v,mean_pairwise_cosine,0.075093,0.064789,0.05709,0.00705,0.477565,320,cosine: higher means more similar
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,qkv,v,maxmatch_cosine,0.50869,0.075298,0.496972,0.362016,0.819008,320,cosine: higher means more similar
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,qkv,v,mmd_rbf,0.008426,0.00782,0.006511,0.004147,0.107025,320,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,qkv,k,mean_pairwise_cosine,0.558315,0.15711,0.530455,0.157144,0.987946,320,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,qkv,k,maxmatch_cosine,0.777241,0.085656,0.767093,0.469872,0.995059,320,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,qkv,k,mmd_rbf,0.050623,0.016356,0.050111,0.015883,0.192627,320,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,qkv,q,mean_pairwise_cosine,0.549607,0.114184,0.543412,0.22764,0.91653,1600,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,qkv,q,maxmatch_cosine,0.75944,0.067637,0.757402,0.589796,0.956354,1600,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,qkv,q,mmd_rbf,0.053655,0.016552,0.051566,0.015266,0.146018,1600,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,qkv,v,mean_pairwise_cosine,0.068666,0.067116,0.047626,0.006083,0.473658,320,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,qkv,v,maxmatch_cosine,0.430909,0.095957,0.420078,0.256752,0.807748,320,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,qkv,v,mmd_rbf,0.02614,0.017179,0.021448,0.006321,0.159857,320,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,qkv,k,mean_pairwise_cosine,0.55475,0.157579,0.52516,0.163635,0.987487,320,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,qkv,k,maxmatch_cosine,0.77154,0.086687,0.761747,0.475888,0.994671,320,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,qkv,k,mmd_rbf,0.054263,0.017044,0.053514,0.01763,0.195734,320,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,qkv,q,mean_pairwise_cosine,0.545645,0.115268,0.538097,0.213538,0.916999,1600,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,qkv,q,maxmatch_cosine,0.752099,0.068847,0.746144,0.584686,0.956025,1600,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,qkv,q,mmd_rbf,0.059906,0.02021,0.057056,0.016517,0.206268,1600,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,qkv,v,mean_pairwise_cosine,0.065477,0.064677,0.046531,0.004892,0.451247,320,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,qkv,v,maxmatch_cosine,0.404364,0.083917,0.393914,0.254839,0.774975,320,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,qkv,v,mmd_rbf,0.029551,0.021412,0.024104,0.007911,0.211892,320,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,qkv,k,mean_pairwise_cosine,0.615929,0.136622,0.592356,0.246761,0.987766,320,cosine: higher means more similar
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,qkv,k,maxmatch_cosine,0.838022,0.065108,0.836592,0.632104,0.994883,320,cosine: higher means more similar
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,qkv,k,mmd_rbf,0.01557,0.01576,0.01048,0.004673,0.133109,320,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,qkv,q,mean_pairwise_cosine,0.599964,0.108976,0.596066,0.279539,0.927265,1600,cosine: higher means more similar
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,qkv,q,maxmatch_cosine,0.814418,0.05479,0.809208,0.602833,0.9736,1600,cosine: higher means more similar
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,qkv,q,mmd_rbf,0.019021,0.023152,0.01124,0.004262,0.285849,1600,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,qkv,v,mean_pairwise_cosine,0.096537,0.074768,0.077388,0.007844,0.45796,320,cosine: higher means more similar
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,qkv,v,maxmatch_cosine,0.517599,0.076196,0.518884,0.332422,0.805599,320,cosine: higher means more similar
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,qkv,v,mmd_rbf,0.015819,0.01934,0.010056,0.004682,0.227061,320,mmd_rbf: lower means more similar; component-local scale
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,qkv,k,mean_pairwise_cosine,0.55434,0.157367,0.525605,0.15704,0.986776,320,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,qkv,k,maxmatch_cosine,0.771301,0.08686,0.76342,0.465069,0.994217,320,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,qkv,k,mmd_rbf,0.056155,0.018881,0.054466,0.015949,0.201763,320,mmd_rbf: lower means more similar; component-local scale
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,qkv,q,mean_pairwise_cosine,0.544258,0.115192,0.535908,0.226663,0.917431,1600,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,qkv,q,maxmatch_cosine,0.750427,0.06803,0.745672,0.550028,0.956552,1600,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,qkv,q,mmd_rbf,0.05957,0.022706,0.055435,0.015373,0.264489,1600,mmd_rbf: lower means more similar; component-local scale
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,qkv,v,mean_pairwise_cosine,0.063785,0.06317,0.045072,0.003497,0.402701,320,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,qkv,v,maxmatch_cosine,0.401084,0.081931,0.389276,0.247589,0.750219,320,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,qkv,v,mmd_rbf,0.032836,0.025196,0.02678,0.012581,0.264715,320,mmd_rbf: lower means more similar; component-local scale
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,qkv,k,mean_pairwise_cosine,0.554778,0.157356,0.525161,0.164431,0.986333,320,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,qkv,k,maxmatch_cosine,0.777229,0.084184,0.767685,0.475934,0.99389,320,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,qkv,k,mmd_rbf,0.051111,0.015535,0.050392,0.01727,0.192005,320,mmd_rbf: lower means more similar; component-local scale
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,qkv,q,mean_pairwise_cosine,0.546426,0.116777,0.539324,0.212832,0.918051,1600,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,qkv,q,maxmatch_cosine,0.758082,0.068375,0.75616,0.587109,0.957836,1600,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,qkv,q,mmd_rbf,0.053833,0.016099,0.052222,0.015432,0.147268,1600,mmd_rbf: lower means more similar; component-local scale
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,qkv,v,mean_pairwise_cosine,0.07037,0.067292,0.05167,0.006147,0.400703,320,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,qkv,v,maxmatch_cosine,0.430061,0.089161,0.415562,0.256506,0.816931,320,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,qkv,v,mmd_rbf,0.026812,0.0168,0.02325,0.008599,0.170974,320,mmd_rbf: lower means more similar; component-local scale
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,head_output,head_output,mean_pairwise_cosine,0.255281,0.181638,0.204382,0.020621,0.999988,1600,cosine: higher means more similar
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,head_output,head_output,maxmatch_cosine,0.723522,0.103363,0.725333,0.375143,0.999997,1600,cosine: higher means more similar
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,head_output,head_output,mmd_rbf,0.016659,0.027356,0.00753,0.0027,0.312833,1600,mmd_rbf: lower means more similar; component-local scale
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,head_output,head_output,l2_mean,4.280043,5.840895,2.64902,0.001689,53.244673,1600,l2_mean: lower means more similar; same-layer comparison preferred
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,head_output,head_output,mean_pairwise_cosine,0.24806,0.194458,0.194255,-0.034224,0.999988,1600,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,head_output,head_output,maxmatch_cosine,0.610014,0.143113,0.595264,0.286173,0.999996,1600,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,head_output,head_output,mmd_rbf,0.05399,0.043022,0.041526,0.006768,0.417045,1600,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,head_output,head_output,l2_mean,4.122955,5.418437,2.615098,0.001752,49.459456,1600,l2_mean: lower means more similar; same-layer comparison preferred
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,head_output,head_output,mean_pairwise_cosine,0.235982,0.189855,0.186,-0.036548,0.999988,1600,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,head_output,head_output,maxmatch_cosine,0.591585,0.142989,0.574668,0.280027,0.999996,1600,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,head_output,head_output,mmd_rbf,0.066272,0.057732,0.048372,0.008625,0.484104,1600,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,head_output,head_output,l2_mean,4.161977,5.439825,2.656837,0.001687,49.150261,1600,l2_mean: lower means more similar; same-layer comparison preferred
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,head_output,head_output,mean_pairwise_cosine,0.316008,0.197104,0.27235,0.017994,0.999991,1600,cosine: higher means more similar
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,head_output,head_output,maxmatch_cosine,0.729576,0.116888,0.737616,0.328753,0.999998,1600,cosine: higher means more similar
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,head_output,head_output,mmd_rbf,0.031697,0.047593,0.013381,0.003537,0.494409,1600,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,head_output,head_output,l2_mean,3.70225,4.695635,2.326088,0.00151,42.926206,1600,l2_mean: lower means more similar; same-layer comparison preferred
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,head_output,head_output,mean_pairwise_cosine,0.237563,0.191889,0.18468,-0.028034,0.99999,1600,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,head_output,head_output,maxmatch_cosine,0.594174,0.142827,0.579981,0.260351,0.999996,1600,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,head_output,head_output,mmd_rbf,0.064502,0.056672,0.047612,0.006942,0.521372,1600,mmd_rbf: lower means more similar; component-local scale
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,head_output,head_output,l2_mean,4.063078,5.270821,2.648566,0.001693,48.37012,1600,l2_mean: lower means more similar; same-layer comparison preferred
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,head_output,head_output,mean_pairwise_cosine,0.250114,0.194366,0.195607,-0.029016,0.99999,1600,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,head_output,head_output,maxmatch_cosine,0.617794,0.140199,0.603316,0.28301,0.999996,1600,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,head_output,head_output,mmd_rbf,0.053025,0.040541,0.041828,0.008157,0.397124,1600,mmd_rbf: lower means more similar; component-local scale
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,head_output,head_output,l2_mean,4.0186,5.158402,2.613974,0.001636,47.771479,1600,l2_mean: lower means more similar; same-layer comparison preferred
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,residual,residual,mean_pairwise_cosine,0.467977,0.102309,0.47771,0.097889,0.653045,41,cosine: higher means more similar
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,residual,residual,maxmatch_cosine,0.689743,0.053924,0.684726,0.492805,0.794391,41,cosine: higher means more similar
+gpqa_orgn_vs_gpqa_ver1,same_semantic_diff_surface,residual,residual,mmd_rbf,0.023064,0.057973,0.011977,0.007433,0.380034,41,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,residual,residual,mean_pairwise_cosine,0.472009,0.097569,0.473907,0.113608,0.708556,41,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,residual,residual,maxmatch_cosine,0.640068,0.073311,0.623079,0.503707,0.797917,41,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_orgn,diff_semantic,residual,residual,mmd_rbf,0.038076,0.010777,0.039238,0.010581,0.075497,41,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,residual,residual,mean_pairwise_cosine,0.445648,0.109369,0.461323,0.049737,0.677197,41,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,residual,residual,maxmatch_cosine,0.608272,0.074801,0.604625,0.377204,0.766775,41,cosine: higher means more similar
+gsm8k_orgn_vs_gpqa_ver1,diff_semantic,residual,residual,mmd_rbf,0.056974,0.075952,0.046943,0.016922,0.520824,41,mmd_rbf: lower means more similar; component-local scale
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,residual,residual,mean_pairwise_cosine,0.447279,0.120494,0.467938,-0.0146,0.720155,41,cosine: higher means more similar
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,residual,residual,maxmatch_cosine,0.653412,0.084878,0.671637,0.318844,0.799315,41,cosine: higher means more similar
+gsm8k_orgn_vs_gsm8k_ver1,same_semantic_diff_surface,residual,residual,mmd_rbf,0.044544,0.095924,0.026434,0.013458,0.632947,41,mmd_rbf: lower means more similar; component-local scale
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,residual,residual,mean_pairwise_cosine,0.428858,0.111666,0.441581,0.009477,0.676588,41,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,residual,residual,maxmatch_cosine,0.59522,0.078629,0.597408,0.323733,0.762575,41,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_orgn,diff_semantic,residual,residual,mmd_rbf,0.06647,0.073595,0.053527,0.02008,0.517486,41,mmd_rbf: lower means more similar; component-local scale
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,residual,residual,mean_pairwise_cosine,0.438499,0.088758,0.439704,0.091286,0.694461,41,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,residual,residual,maxmatch_cosine,0.615841,0.069323,0.614866,0.425049,0.798011,41,cosine: higher means more similar
+gsm8k_ver1_vs_gpqa_ver1,diff_semantic,residual,residual,mmd_rbf,0.039862,0.00836,0.041286,0.012887,0.065722,41,mmd_rbf: lower means more similar; component-local scale

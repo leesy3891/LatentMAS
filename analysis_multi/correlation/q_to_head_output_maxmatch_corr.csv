@@ -1,0 +1,7 @@
+pair,component,metric,pair_category,pearson,spearman,n,note
+gpqa_orgn_vs_gpqa_ver1,q,maxmatch_cosine,same_semantic_diff_surface,0.000368,0.002846,1600,head aligned
+gsm8k_orgn_vs_gpqa_orgn,q,maxmatch_cosine,diff_semantic,0.053355,0.047541,1600,head aligned
+gsm8k_orgn_vs_gpqa_ver1,q,maxmatch_cosine,diff_semantic,-0.014208,-0.024603,1600,head aligned
+gsm8k_orgn_vs_gsm8k_ver1,q,maxmatch_cosine,same_semantic_diff_surface,-0.109573,-0.118602,1600,head aligned
+gsm8k_ver1_vs_gpqa_orgn,q,maxmatch_cosine,diff_semantic,-0.025602,-0.037379,1600,head aligned
+gsm8k_ver1_vs_gpqa_ver1,q,maxmatch_cosine,diff_semantic,0.041115,0.034853,1600,head aligned

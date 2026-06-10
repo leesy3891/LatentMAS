@@ -1,0 +1,7 @@
+pair,n_rows,n_layers,n_heads,mean_pairwise_cosine_mean,mean_pairwise_cosine_std,mean_pairwise_cosine_median,maxmatch_cosine_mean,maxmatch_cosine_std,maxmatch_cosine_median,mmd_rbf_mean,mmd_rbf_std,mmd_rbf_median,l2_mean_mean,l2_mean_std,l2_mean_median,pair_category,language_pair,same_task,same_version
+gpqa_orgn_vs_gpqa_ver1,1600,40,40,0.255281,0.181638,0.204382,0.723522,0.103363,0.725333,0.016659,0.027356,0.00753,4.280043,5.840895,2.64902,same_semantic_diff_surface,cross_lang,True,False
+gsm8k_orgn_vs_gpqa_orgn,1600,40,40,0.24806,0.194458,0.194255,0.610014,0.143113,0.595264,0.05399,0.043022,0.041526,4.122955,5.418437,2.615098,diff_semantic,same_lang,False,True
+gsm8k_orgn_vs_gpqa_ver1,1600,40,40,0.235982,0.189855,0.186,0.591585,0.142989,0.574668,0.066272,0.057732,0.048372,4.161977,5.439825,2.656837,diff_semantic,cross_lang,False,False
+gsm8k_orgn_vs_gsm8k_ver1,1600,40,40,0.316008,0.197104,0.27235,0.729576,0.116888,0.737616,0.031697,0.047593,0.013381,3.70225,4.695635,2.326088,same_semantic_diff_surface,cross_lang,True,False
+gsm8k_ver1_vs_gpqa_orgn,1600,40,40,0.237563,0.191889,0.18468,0.594174,0.142827,0.579981,0.064502,0.056672,0.047612,4.063078,5.270821,2.648566,diff_semantic,cross_lang,False,False
+gsm8k_ver1_vs_gpqa_ver1,1600,40,40,0.250114,0.194366,0.195607,0.617794,0.140199,0.603316,0.053025,0.040541,0.041828,4.0186,5.158402,2.613974,diff_semantic,same_lang,False,True

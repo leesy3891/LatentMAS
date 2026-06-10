@@ -1,0 +1,7 @@
+pair,component,metric,pair_category,pearson,spearman,n,note
+gpqa_orgn_vs_gpqa_ver1,v,maxmatch_cosine,same_semantic_diff_surface,0.286836,0.217635,1600,GQA kv->q mapped
+gsm8k_orgn_vs_gpqa_orgn,v,maxmatch_cosine,diff_semantic,0.50732,0.466815,1600,GQA kv->q mapped
+gsm8k_orgn_vs_gpqa_ver1,v,maxmatch_cosine,diff_semantic,0.476672,0.41806,1600,GQA kv->q mapped
+gsm8k_orgn_vs_gsm8k_ver1,v,maxmatch_cosine,same_semantic_diff_surface,0.455653,0.432724,1600,GQA kv->q mapped
+gsm8k_ver1_vs_gpqa_orgn,v,maxmatch_cosine,diff_semantic,0.468476,0.413987,1600,GQA kv->q mapped
+gsm8k_ver1_vs_gpqa_ver1,v,maxmatch_cosine,diff_semantic,0.503588,0.469925,1600,GQA kv->q mapped
