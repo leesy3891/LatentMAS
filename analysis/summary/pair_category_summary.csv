@@ -1,0 +1,17 @@
+stage,component,pair_category,metric,mean,std,median,n_pairs,n_rows
+qkv,k,unknown,maxmatch_cosine,0.912424,0.044394,0.919149,6,28800
+qkv,k,unknown,mean_pairwise_cosine,0.555903,0.160194,0.538486,6,28800
+qkv,k,unknown,mmd_rbf,0.045762,0.01213,0.043804,6,28800
+qkv,q,unknown,maxmatch_cosine,0.889493,0.046395,0.895424,6,144000
+qkv,q,unknown,mean_pairwise_cosine,0.566646,0.11071,0.556694,6,144000
+qkv,q,unknown,mmd_rbf,0.04808,0.011295,0.046269,6,144000
+qkv,v,unknown,maxmatch_cosine,0.829573,0.063075,0.836748,6,28800
+qkv,v,unknown,mean_pairwise_cosine,0.098543,0.065117,0.084763,6,28800
+qkv,v,unknown,mmd_rbf,0.04575,0.010467,0.044319,6,28800
+head_output,head_output,unknown,maxmatch_cosine,0.888392,0.066087,0.901641,6,144000
+head_output,head_output,unknown,mean_pairwise_cosine,0.358279,0.180757,0.321785,6,144000
+head_output,head_output,unknown,mmd_rbf,0.067593,0.044939,0.055868,6,144000
+head_output,head_output,unknown,l2_mean,3.657831,4.936871,2.187588,6,144000
+residual,residual,unknown,maxmatch_cosine,0.88904,0.048145,0.892574,6,3690
+residual,residual,unknown,mean_pairwise_cosine,0.475495,0.094426,0.486702,6,3690
+residual,residual,unknown,mmd_rbf,0.051808,0.023108,0.048052,6,3690

@@ -1,7 +1,7 @@
-pair,n_rows,n_tasks,n_layers,mean_pairwise_cosine_mean,mean_pairwise_cosine_std,mean_pairwise_cosine_median,maxmatch_cosine_mean,maxmatch_cosine_std,maxmatch_cosine_median,mmd_rbf_mean,mmd_rbf_std,mmd_rbf_median,cka_total_count,cka_valid_count,cka_valid_rate,cka_linear_mean_valid_only,cka_linear_std_valid_only,cka_linear_median_valid_only
-original_vs_version1,2050,50,41,0.487384,0.098858,0.492246,0.897069,0.046872,0.904576,0.0143,0.032618,0.007876,2050,123,0.06,0.702401,0.262794,0.694918
-original_vs_version2,2050,50,41,0.506437,0.091396,0.503803,0.958898,0.016829,0.961762,0.00254,0.003161,0.002062,2050,205,0.1,0.893354,0.127679,0.937174
-original_vs_version3,2050,50,41,0.50575,0.091029,0.503391,0.939403,0.02218,0.941563,0.003653,0.00357,0.003161,2050,41,0.02,0.699586,0.273041,0.643061
-version1_vs_version2,2050,50,41,0.488054,0.098733,0.492133,0.897864,0.046624,0.903938,0.013954,0.031956,0.007774,2050,41,0.02,0.832502,0.179016,0.84015
-version1_vs_version3,2050,50,41,0.488163,0.098642,0.492513,0.891068,0.047088,0.895568,0.014569,0.032174,0.008311,2050,41,0.02,0.744258,0.238468,0.709151
-version2_vs_version3,2050,50,41,0.506764,0.090988,0.504842,0.948849,0.018864,0.950707,0.0026,0.000972,0.002481,2050,123,0.06,0.82888,0.176591,0.839314
+pair,n_rows,n_layers,mean_pairwise_cosine_mean,mean_pairwise_cosine_std,mean_pairwise_cosine_median,maxmatch_cosine_mean,maxmatch_cosine_std,maxmatch_cosine_median,mmd_rbf_mean,mmd_rbf_std,mmd_rbf_median,pair_category,language_pair,same_task,same_version
+original_vs_version1,615,41,0.461434,0.097468,0.476563,0.864397,0.046549,0.875179,0.05904,0.031581,0.052982,unknown,unknown,False,False
+original_vs_version2,615,41,0.487543,0.091196,0.496952,0.911471,0.042289,0.926368,0.04749,0.016684,0.044378,unknown,unknown,False,False
+original_vs_version3,615,41,0.486957,0.09157,0.496061,0.895057,0.04287,0.902953,0.04936,0.01516,0.046687,unknown,unknown,False,False
+version1_vs_version2,615,41,0.463629,0.095501,0.477312,0.880221,0.051864,0.881571,0.054338,0.026255,0.050887,unknown,unknown,False,False
+version1_vs_version3,615,41,0.463081,0.095878,0.476435,0.865138,0.046358,0.868392,0.056553,0.028285,0.051397,unknown,unknown,False,False
+version2_vs_version3,615,41,0.490327,0.0898,0.500123,0.917953,0.025666,0.922874,0.044069,0.006887,0.043529,unknown,unknown,False,False
